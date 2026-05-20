@@ -70,8 +70,8 @@ class PanelModelo(QGroupBox):
         modelo = self.selector_modelo.currentText()
         origen = self.selector_origen.currentText()
 
-        mostrar_ab = (modelo == "Combinado" and origen == "Carpeta local")
-        mostrar_simple = (modelo in ["DCGAN", "CycleGAN"] and origen == "Carpeta local")
+        mostrar_ab = (modelo in ["CycleGAN", "Combinado"] and origen == "Carpeta local")
+        mostrar_simple = (modelo == "DCGAN" and origen == "Carpeta local")
 
         self.boton_dataset_a.setVisible(mostrar_ab)
         self.boton_dataset_b.setVisible(mostrar_ab)
@@ -182,9 +182,9 @@ class PanelVisualizacion(QGroupBox):
         bytes_por_linea = canales * ancho
 
         qimage = QImage(imagen_np.data, ancho, alto, bytes_por_linea, QImage.Format_RGB888)
-        pixmap = QPixmap.fromImage(qimage).scaled(256, 256)
+        pixmap = QPixmap.fromImage(qimage)
         pixmap_escalado = pixmap.scaled(512, 512, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.label_imagen.setPixmap(pixmap)
+        self.label_imagen.setPixmap(pixmap_escalado)
         self.imagen_actual = imagen_np
 
 class PanelEstadisticas(QGroupBox):
@@ -222,4 +222,3 @@ class PanelEstadisticas(QGroupBox):
         self.ax.set_title("Pérdidas por Época")
         self.ax.legend()
         self.canvas.draw()
-

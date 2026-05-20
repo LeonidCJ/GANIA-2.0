@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import traceback
 
 class Generador(nn.Module):
     def __init__(self, dim_latente=100, canales_img=3):
@@ -57,11 +58,8 @@ class Discriminador(nn.Module):
         )
 
     def forward(self, img):
-        return self.modelo(img).view(-1)  # Devuelve un vector [B]
-
-    def forward(self, img):
-        out = self.modelo(img)  # [B, 1, x, y] normalmente
-        return out.mean([2, 3]).view(-1)  # Promedia sobre H y W → [B]
+        out = self.modelo(img)
+        return out.view(out.size(0), -1).mean(1) # Salida escalar por imagen
 
 class EntrenadorDCGAN:
     def __init__(self, dispositivo, dim_latente=100, canales_img=3, lr=0.0002):
@@ -69,6 +67,7 @@ class EntrenadorDCGAN:
         self.generador = Generador(dim_latente, canales_img).to(dispositivo)
         self.discriminador = Discriminador(canales_img).to(dispositivo)
         
+        self.dim_latente = dim_latente
         self.opt_gen = torch.optim.Adam(self.generador.parameters(), lr=lr, betas=(0.5, 0.999))
         self.opt_dis = torch.optim.Adam(self.discriminador.parameters(), lr=lr, betas=(0.5, 0.999))
         
@@ -97,7 +96,7 @@ class EntrenadorDCGAN:
                 salida_real = self.discriminador(imgs_reales)
                 perdida_real = self.criterio(salida_real, reales)
 
-                ruido = torch.randn(batch_size, 100, 1, 1, device=self.dispositivo)
+                ruido = torch.randn(batch_size, self.dim_latente, 1, 1, device=self.dispositivo)
                 imgs_falsas = self.generador(ruido)
 
                 salida_falsa = self.discriminador(imgs_falsas.detach())
@@ -125,8 +124,5 @@ class EntrenadorDCGAN:
 
         except Exception as e:
             print("Error durante entrenamiento de DCGAN:", e)
-            import traceback
             traceback.print_exc()
             return 0, 0
-
-

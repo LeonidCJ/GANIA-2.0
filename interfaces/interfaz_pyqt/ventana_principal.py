@@ -1,11 +1,12 @@
 from datetime import datetime
 import os
 from PIL import Image
+import numpy as np
 import traceback
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QStatusBar, QTextEdit, QMessageBox)
 from PyQt5.QtCore import QTimer
 from utils.cargador_datos import crear_cargador_datos, crear_cargador_datos_cifar10
-from .controles import (PanelModelo, PanelEntrenamiento, PanelVisualizacion, PanelEstadisticas)
+from interfaces.interfaz_pyqt.controles import (PanelModelo, PanelEntrenamiento, PanelVisualizacion, PanelEstadisticas)
 import torch
 from modelos.dcgan import EntrenadorDCGAN, Generador
 from modelos.cyclegan import EntrenadorCycleGAN
@@ -22,6 +23,7 @@ class VentanaGAN(QMainWindow):
         self.combinado = None
         self.epoca = 0
         self.max_epocas = 0
+        self.timer = None
         self.configurar_interfaz()
 
     def configurar_interfaz(self):
@@ -100,14 +102,17 @@ class VentanaGAN(QMainWindow):
         self.timer.start(1000)  # Actualizar cada 1 segundo
             
     def generar_imagen_dcgan(self):
-        
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        modelo = Generador(dim_latente=100, canales_img=3).to(device)
-        modelo.apply(self._init_pesos)  # Inicializa aleatoriamente
+        # Usar el generador del entrenador si existe, si no, crear uno temporal
+        if self.dcgan and hasattr(self.dcgan, 'generador'):
+            gen = self.dcgan.generador
+        else:
+            gen = Generador(dim_latente=100, canales_img=3).to(device)
+            gen.apply(self._init_pesos)
 
         noise = torch.randn(1, 100, 1, 1, device=device)
         with torch.no_grad():
-            imagen_tensor = modelo(noise).cpu().squeeze(0)
+            imagen_tensor = gen(noise).cpu().squeeze(0)
     
         imagen_np = (imagen_tensor.permute(1, 2, 0).numpy() * 127.5 + 127.5).clip(0, 255).astype("uint8")
         return imagen_np
@@ -135,8 +140,9 @@ class VentanaGAN(QMainWindow):
             return
 
         self.barra_estado.showMessage(f"Iniciando entrenamiento: {modelo_seleccionado} | Tasa: {tasa}")
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.actualizar_datos)
+        if self.timer is None:
+            self.timer = QTimer()
+            self.timer.timeout.connect(self.actualizar_datos)
         self.timer.start(3000)
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -162,7 +168,14 @@ class VentanaGAN(QMainWindow):
                 self.entrenar_dcgan()
 
             elif modelo_seleccionado == "CycleGAN":
-                self.cargador = crear_cargador_datos("./datasets/arte")
+                ruta_a = self.panel_controles.ruta_dataset_a
+                ruta_b = self.panel_controles.ruta_dataset_b
+                if not ruta_a or not ruta_b:
+                    self.barra_estado.showMessage("Debes seleccionar ambos datasets (A y B) para CycleGAN.")
+                    return
+                
+                self.cargador_A = crear_cargador_datos(ruta_a)
+                self.cargador_B = crear_cargador_datos(ruta_b)
                 self.cyclegan = EntrenadorCycleGAN(device, lr=tasa)
                 self.entrenar_cyclegan()
 
@@ -199,11 +212,14 @@ class VentanaGAN(QMainWindow):
         self.epoca += 1
         
     def entrenar_cyclegan(self):
-        
         if self.epoca >= self.max_epocas:
             self.barra_estado.showMessage("Entrenamiento CycleGAN terminado")
             self.timer.stop()
             return
+
+        if hasattr(self, 'cargador_A') and hasattr(self, 'cargador_B'):
+            loss_G, loss_D = self.cyclegan.entrenar_epoca(self.cargador_A, self.cargador_B, self.epoca, self.max_epocas)
+            self.panel_estadisticas.actualizar(self.epoca + 1, loss_G, loss_D)
 
         self.epoca += 1
 
@@ -272,9 +288,14 @@ class VentanaGAN(QMainWindow):
                 self.pestana_dcgan.mostrar_imagen(img_np)
                 
             elif self.cyclegan and not self.combinado:
-                ruido = torch.randn(1, 100, 1, 1, device=self.cyclegan.dispositivo)
-                salida = self.cyclegan.transformar(ruido).cpu() 
-                img_np = (salida[0].permute(1, 2, 0).numpy() * 127.5 + 127.5).clip(0, 255).astype("uint8")
-                self.pestana_cyclegan.mostrar_imagen(img_np)
+                # Usar cargador_A para visualizar la transformación A -> B
+                if hasattr(self, 'cargador_A'):
+                    try:
+                        batch = next(iter(self.cargador_A))[0]
+                        salida = self.cyclegan.transformar(batch[:1]).cpu()
+                        img_np = (salida[0].permute(1, 2, 0).numpy() * 127.5 + 127.5).clip(0, 255).astype("uint8")
+                        self.pestana_cyclegan.mostrar_imagen(img_np)
+                    except Exception as e:
+                        print(f"Error visualizando CycleGAN: {e}")
 
         self.barra_estado.showMessage(f"Actualizado: época {self.epoca}/{self.max_epocas}")
