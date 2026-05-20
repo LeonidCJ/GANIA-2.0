@@ -220,20 +220,33 @@ class VentanaGAN(QMainWindow):
         self.generar_y_mostrar_imagenes_combinadas(self.epoca)
         self.epoca += 1
         
-    def generar_y_mostrar_imagenes_combinadas(self, epoca):
-        
-        with torch.no_grad():
-            imagenes = self.combinado.dcgan.generador(self.combinado.dcgan.ruido_fijo).cpu()
-            transformadas = self.combinado.cyclegan.G_AB(imagenes[:1]).cpu()
+    def detener_entrenamiento(self):
+        if hasattr(self, 'timer'):
+            self.timer.stop()
+            self.barra_estado.showMessage("Entrenamiento detenido")
+            
+    def validar_inicio_entrenamiento(self):
+        origen = self.panel_controles.selector_origen.currentText()
 
-            img1 = imagenes[0].permute(1, 2, 0).numpy() * 127.5 + 127.5
-            img2 = transformadas[0].permute(1, 2, 0).numpy() * 127.5 + 127.5
+        if origen == "CIFAR-10":
+            self.panel_entrenamiento.set_habilitar_inicio(True)
+        elif origen == "Carpeta local":
+            ruta = self.panel_controles.ruta_dataset_a
+            habilitar = bool(ruta and os.path.exists(ruta))
+            self.panel_entrenamiento.set_habilitar_inicio(habilitar)
+        else:
+            self.panel_entrenamiento.set_habilitar_inicio(False)
 
-            self.pestana_dcgan.mostrar_imagen(img1.clip(0, 255).astype("uint8"))
-            self.pestana_cyclegan.mostrar_imagen(img2.clip(0, 255).astype("uint8"))
+    def mostrar(self):
+        self.show()
+        if self.dcgan:
+            imagen = self.generar_imagen_dcgan()
+            self.pestana_dcgan.mostrar_imagen(imagen)
+            
 
     def actualizar_datos(self):
         
+        # 1. Ejecutar el paso de entrenamiento correspondiente (solo una vez)
         if self.dcgan:
             self.entrenar_dcgan()
             with torch.no_grad():
@@ -266,36 +279,30 @@ class VentanaGAN(QMainWindow):
         
         if self.dcgan:
             self.entrenar_dcgan()
+
         if self.cyclegan:
             self.entrenar_cyclegan()
+
         if self.combinado:
             self.entrenar_combinado()
 
+        # 2. Actualizar visualización (dentro de no_grad para ahorrar memoria)
+        with torch.no_grad():
+            if self.dcgan and not self.combinado:
+                muestras = self.dcgan.generador(self.dcgan.ruido_fijo).cpu()
+                img_np = (muestras[0].permute(1, 2, 0).numpy() * 127.5 + 127.5).clip(0, 255).astype("uint8")
+                self.pestana_dcgan.mostrar_imagen(img_np)
+
+            if self.cyclegan and not self.combinado:
+                # Usamos ruido fijo si el modelo lo soporta, o generamos uno nuevo
+                # Asumiendo que self.cyclegan.transformar_ruido_fijo() existe o se puede adaptar
+                ruido = torch.randn(1, 100, 1, 1, device=self.cyclegan.dispositivo)
+                salida = self.cyclegan.G_AB(ruido).cpu() if hasattr(self.cyclegan, 'G_AB') else self.cyclegan.transformar(ruido).cpu()
+                img_np = (salida[0].permute(1, 2, 0).numpy() * 127.5 + 127.5).clip(0, 255).astype("uint8")
+                self.pestana_cyclegan.mostrar_imagen(img_np)
+            
+            if self.combinado:
+                # Llamamos a la función centralizada que ya definiste en la línea 200
+                self.generar_y_mostrar_imagenes_combinadas(self.epoca)
+
         self.barra_estado.showMessage(f"Actualizado: época {self.epoca}/{self.max_epocas}")
-
-
-    def detener_entrenamiento(self):
-        if hasattr(self, 'timer'):
-            self.timer.stop()
-            self.barra_estado.showMessage("Entrenamiento detenido")
-            
-    def validar_inicio_entrenamiento(self):
-        origen = self.panel_controles.selector_origen.currentText()
-
-        if origen == "CIFAR-10":
-            self.panel_entrenamiento.set_habilitar_inicio(True)
-        elif origen == "Carpeta local":
-            ruta = self.panel_controles.ruta_dataset_a
-            habilitar = bool(ruta and os.path.exists(ruta))
-            self.panel_entrenamiento.set_habilitar_inicio(habilitar)
-        else:
-            self.panel_entrenamiento.set_habilitar_inicio(False)
-
-    def mostrar(self):
-        self.show()
-        if self.dcgan:
-            imagen = self.generar_imagen_dcgan()
-            self.pestana_dcgan.mostrar_imagen(imagen)
-            
-
-        
