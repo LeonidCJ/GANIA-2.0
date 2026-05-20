@@ -1,0 +1,7 @@
+PyQt5>=5.15.9
+matplotlib>=3.10.0
+torch
+torchvision
+numpy
+Pillow
+bing-image-downloader

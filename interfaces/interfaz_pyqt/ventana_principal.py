@@ -4,7 +4,7 @@ from PIL import Image
 import numpy as np
 import traceback
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QStatusBar, QTextEdit, QMessageBox)
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, QThread, pyqtSignal
 from utils.cargador_datos import crear_cargador_datos, crear_cargador_datos_cifar10
 from interfaces.interfaz_pyqt.controles import (PanelModelo, PanelEntrenamiento, PanelVisualizacion, PanelEstadisticas)
 import torch
@@ -12,6 +12,27 @@ from modelos.dcgan import EntrenadorDCGAN, Generador
 from modelos.cyclegan import EntrenadorCycleGAN
 from modelos.combinado import GeneradorArteCombinado
 from utils.gestor_resultados import crear_estructura_resultados
+
+class EntrenadorWorker(QThread):
+    finalizado = pyqtSignal(int, float, float) # epoca, loss_g, loss_d
+    error = pyqtSignal(str)
+
+    def __init__(self, modelo, cargadores, epoca, max_epocas):
+        super().__init__()
+        self.modelo = modelo
+        self.cargadores = cargadores
+        self.epoca = epoca
+        self.max_epocas = max_epocas
+
+    def run(self):
+        try:
+            if isinstance(self.modelo, EntrenadorDCGAN):
+                lg, ld = self.modelo.entrenar_epoca(self.cargadores[0], self.epoca, self.max_epocas)
+            elif isinstance(self.modelo, EntrenadorCycleGAN):
+                lg, ld = self.modelo.entrenar_epoca(self.cargadores[0], self.cargadores[1], self.epoca, self.max_epocas)
+            self.finalizado.emit(self.epoca, lg, ld)
+        except Exception as e:
+            self.error.emit(str(e))
 
 class VentanaGAN(QMainWindow):
     def __init__(self):
@@ -196,20 +217,16 @@ class VentanaGAN(QMainWindow):
             print("ERROR DETECTADO:")
             traceback.print_exc()
 
-    def entrenar_dcgan(self):
-        
-        if self.epoca >= self.max_epocas:
-            self.barra_estado.showMessage("Entrenamiento terminado")
-            self.timer.stop()
-            return
-
-        # Entrenar y capturar las pérdidas
-        loss_G, loss_D = self.dcgan.entrenar_epoca(self.cargador, self.epoca, self.max_epocas)
-
-        # Actualizar estadísticas
-        self.panel_estadisticas.actualizar(self.epoca + 1, loss_G, loss_D)
-
+    def on_epoca_terminada(self, epoca, loss_G, loss_D):
+        self.panel_estadisticas.actualizar(epoca + 1, loss_G, loss_D)
         self.epoca += 1
+        self.actualizar_visualizacion()
+        
+        if self.epoca < self.max_epocas:
+            self.ejecutar_siguiente_epoca()
+        else:
+            self.barra_estado.showMessage("Entrenamiento completado")
+            self.panel_entrenamiento.boton_iniciar.setEnabled(True)
         
     def entrenar_cyclegan(self):
         if self.epoca >= self.max_epocas:

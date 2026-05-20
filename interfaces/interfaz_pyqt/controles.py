@@ -183,6 +183,7 @@ class PanelVisualizacion(QGroupBox):
 
         qimage = QImage(imagen_np.data, ancho, alto, bytes_por_linea, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qimage)
+        # Asegurar que el escalado mantenga la calidad para imágenes pequeñas (64x64)
         pixmap_escalado = pixmap.scaled(512, 512, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.label_imagen.setPixmap(pixmap_escalado)
         self.imagen_actual = imagen_np
