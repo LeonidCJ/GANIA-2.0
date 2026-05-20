@@ -1,6 +1,6 @@
-import datetime
+from datetime import datetime
 import os
-from tkinter import Image
+from PIL import Image
 import traceback
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QStatusBar, QTextEdit, QMessageBox)
 from PyQt5.QtCore import QTimer
@@ -148,7 +148,7 @@ class VentanaGAN(QMainWindow):
                 # Verifica si el dataset es CIFAR-10 o personalizado
                 if origen_dataset == "CIFAR-10":
                     self.cargador = crear_cargador_datos_cifar10()
-                elif origen_dataset == "Carpeta personalizada":
+                elif origen_dataset == "Carpeta local":
                     ruta = self.panel_controles.ruta_dataset_a
                     if not ruta:
                         self.barra_estado.showMessage("Debes seleccionar un dataset desde la carpeta personalizada antes de iniciar.")
@@ -266,9 +266,9 @@ class VentanaGAN(QMainWindow):
         
         if self.dcgan:
             self.entrenar_dcgan()
-        elif self.cyclegan:
+        if self.cyclegan:
             self.entrenar_cyclegan()
-        elif self.combinado:
+        if self.combinado:
             self.entrenar_combinado()
 
         self.barra_estado.showMessage(f"Actualizado: época {self.epoca}/{self.max_epocas}")
@@ -284,7 +284,7 @@ class VentanaGAN(QMainWindow):
 
         if origen == "CIFAR-10":
             self.panel_entrenamiento.set_habilitar_inicio(True)
-        elif origen == "Carpeta personalizada":
+        elif origen == "Carpeta local":
             ruta = self.panel_controles.ruta_dataset_a
             habilitar = bool(ruta and os.path.exists(ruta))
             self.panel_entrenamiento.set_habilitar_inicio(habilitar)
