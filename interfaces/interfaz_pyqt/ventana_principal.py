@@ -206,6 +206,17 @@ class VentanaGAN(QMainWindow):
             return
 
         self.epoca += 1
+
+    def generar_y_mostrar_imagenes_combinadas(self, epoca):
+        with torch.no_grad():
+            muestras = self.combinado.dcgan.generador(self.combinado.dcgan.ruido_fijo).cpu()
+            transformadas = self.combinado.cyclegan.G_AB(muestras[:1]).cpu()
+
+            img1 = (muestras[0].permute(1, 2, 0).numpy() * 127.5 + 127.5).clip(0, 255).astype("uint8")
+            img2 = (transformadas[0].permute(1, 2, 0).numpy() * 127.5 + 127.5).clip(0, 255).astype("uint8")
+
+            self.pestana_dcgan.mostrar_imagen(img1)
+            self.pestana_cyclegan.mostrar_imagen(img2)
         
     def entrenar_combinado(self):
         
@@ -245,64 +256,25 @@ class VentanaGAN(QMainWindow):
             
 
     def actualizar_datos(self):
-        
-        # 1. Ejecutar el paso de entrenamiento correspondiente (solo una vez)
+        # 1. Paso de entrenamiento único por ciclo de timer
         if self.dcgan:
             self.entrenar_dcgan()
-            with torch.no_grad():
-                muestras = self.dcgan.generador(self.dcgan.ruido_fijo).cpu()
-                img = muestras[0]
-                img_np = (img.permute(1, 2, 0).numpy() * 127.5 + 127.5).clip(0, 255).astype("uint8")
-                self.pestana_dcgan.mostrar_imagen(img_np)
-
-        self.barra_estado.showMessage(f"Actualizado: {self.epoca}/{self.max_epocas}")
-        
-        if self.cyclegan:
-            ruido = torch.randn(1, 100, 1, 1, device=self.cyclegan.dispositivo)
-            salida = self.cyclegan.transformar(ruido).cpu()
-            img = salida[0]
-            img_np = (img.permute(1, 2, 0).numpy() * 127.5 + 127.5).clip(0, 255).astype("uint8")
-            self.pestana_cyclegan.mostrar_imagen(img_np)
-            
-        if self.combinado:
-            self.combinado.generar_y_mostrar(self.pestana_dcgan, self.pestana_cyclegan)
-
-            with torch.no_grad():
-                muestras = self.combinado.dcgan.generador(self.combinado.dcgan.ruido_fijo).cpu()
-                transformadas = self.combinado.cyclegan.G_AB(muestras[:1]).cpu()
-
-                img1 = muestras[0].permute(1, 2, 0).numpy() * 127.5 + 127.5
-                img2 = transformadas[0].permute(1, 2, 0).numpy() * 127.5 + 127.5
-
-                self.pestana_dcgan.mostrar_imagen(img1.clip(0, 255).astype("uint8"))
-                self.pestana_cyclegan.mostrar_imagen(img2.clip(0, 255).astype("uint8"))
-        
-        if self.dcgan:
-            self.entrenar_dcgan()
-
-        if self.cyclegan:
+        elif self.cyclegan:
             self.entrenar_cyclegan()
-
-        if self.combinado:
+        elif self.combinado:
             self.entrenar_combinado()
 
-        # 2. Actualizar visualización (dentro de no_grad para ahorrar memoria)
+        # 2. Actualización visual optimizada
         with torch.no_grad():
             if self.dcgan and not self.combinado:
                 muestras = self.dcgan.generador(self.dcgan.ruido_fijo).cpu()
                 img_np = (muestras[0].permute(1, 2, 0).numpy() * 127.5 + 127.5).clip(0, 255).astype("uint8")
                 self.pestana_dcgan.mostrar_imagen(img_np)
-
-            if self.cyclegan and not self.combinado:
-                # Usamos ruido fijo si el modelo lo soporta, o generamos uno nuevo
-                # Asumiendo que self.cyclegan.transformar_ruido_fijo() existe o se puede adaptar
+                
+            elif self.cyclegan and not self.combinado:
                 ruido = torch.randn(1, 100, 1, 1, device=self.cyclegan.dispositivo)
-                salida = self.cyclegan.G_AB(ruido).cpu() if hasattr(self.cyclegan, 'G_AB') else self.cyclegan.transformar(ruido).cpu()
+                salida = self.cyclegan.transformar(ruido).cpu() 
                 img_np = (salida[0].permute(1, 2, 0).numpy() * 127.5 + 127.5).clip(0, 255).astype("uint8")
                 self.pestana_cyclegan.mostrar_imagen(img_np)
-            
-            if self.combinado:
-                # Llamamos a la función centralizada que ya definiste en la línea 200
-                self.generar_y_mostrar_imagenes_combinadas(self.epoca)
 
         self.barra_estado.showMessage(f"Actualizado: época {self.epoca}/{self.max_epocas}")
