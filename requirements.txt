@@ -5,3 +5,7 @@ torchvision
 numpy
 Pillow
 bing-image-downloader
+pandas
+scipy
+# Opcional: para cálculo de FID real con InceptionV3 (recomendado para tesis)
+# torchmetrics[image]

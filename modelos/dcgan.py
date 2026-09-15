@@ -74,7 +74,28 @@ class EntrenadorDCGAN:
         self.criterio = nn.BCELoss()
         self.ruido_fijo = torch.randn(64, dim_latente, 1, 1, device=dispositivo)
 
-    def entrenar_epoca(self, cargador_datos, epoca, num_epocas):
+    def guardar_checkpoint(self, epoca, ruta_dir="resultados/checkpoints"):
+        import os
+        os.makedirs(ruta_dir, exist_ok=True)
+        ruta = os.path.join(ruta_dir, f"dcgan_epoca_{epoca}.pth")
+        torch.save({
+            'epoca': epoca,
+            'gen_state_dict': self.generador.state_dict(),
+            'dis_state_dict': self.discriminador.state_dict(),
+            'opt_gen_state_dict': self.opt_gen.state_dict(),
+            'opt_dis_state_dict': self.opt_dis.state_dict(),
+        }, ruta)
+        print(f"Checkpoint guardado en: {ruta}")
+
+    def cargar_checkpoint(self, ruta):
+        checkpoint = torch.load(ruta, map_location=self.dispositivo)
+        self.generador.load_state_dict(checkpoint['gen_state_dict'])
+        self.discriminador.load_state_dict(checkpoint['dis_state_dict'])
+        self.opt_gen.load_state_dict(checkpoint['opt_gen_state_dict'])
+        self.opt_dis.load_state_dict(checkpoint['opt_dis_state_dict'])
+        return checkpoint['epoca']
+
+    def entrenar_epoca(self, cargador_datos, epoca, num_epocas, abort_callback=None):
         try:
             self.generador.train()
             self.discriminador.train()
@@ -84,10 +105,14 @@ class EntrenadorDCGAN:
             batches = 0
 
             for i, (imgs_reales, _) in enumerate(cargador_datos):
+                if abort_callback and abort_callback():
+                    return 0, 0
+
                 imgs_reales = imgs_reales.to(self.dispositivo)
                 batch_size = imgs_reales.size(0)
 
-                reales = torch.ones(batch_size, device=self.dispositivo)
+                # Label Smoothing: Usar 0.9 para reales en lugar de 1.0
+                reales = torch.full((batch_size,), 0.9, device=self.dispositivo)
                 falsas = torch.zeros(batch_size, device=self.dispositivo)
 
                 # === Entrenamiento del discriminador ===
@@ -108,8 +133,10 @@ class EntrenadorDCGAN:
 
                 # === Entrenamiento del generador ===
                 self.opt_gen.zero_grad()
+                # Para el generador, queremos que el discriminador piense que son reales (1.0)
+                reales_gen = torch.ones(batch_size, device=self.dispositivo)
                 salida = self.discriminador(imgs_falsas)
-                perdida_gen = self.criterio(salida, reales)
+                perdida_gen = self.criterio(salida, reales_gen)
                 perdida_gen.backward()
                 self.opt_gen.step()
 

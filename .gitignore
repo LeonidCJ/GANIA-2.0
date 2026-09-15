@@ -12,7 +12,17 @@ __pycache__/
 datos/datasets/
 datos/resultados/
 datos/resultados_guardados/
+datos/config_usuario.json
 resultados/
 resultados_guardados/
 ejemplos/
+
+# IDE y herramientas
+.idea/
+.vscode/
+.artifacts/
+.pytest_cache/
+temp_restore*/
+gania_codigo*.zip
+Gania 2.0 fuente.zip
 
