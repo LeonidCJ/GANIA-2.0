@@ -6,39 +6,36 @@ import numpy as np
 import traceback
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QStatusBar, QTextEdit, QMessageBox, QStackedWidget, QFrame,
-                             QLabel, QPushButton, QButtonGroup, QRadioButton, QScrollArea,
-                             QGroupBox, QGraphicsDropShadowEffect)
-from PyQt5.QtCore import QThread, pyqtSignal, Qt, QSize, QTimer
+                             QLabel, QPushButton, QScrollArea, QGraphicsDropShadowEffect)
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor
-from interfaces.estilos import ESTILO_OSCURO, ESTILO_CLARO
-from interfaces.controles_personalizados import ToggleTemaNeumorfico
-from interfaces.panel_entrenamiento import PanelModelo, PanelEntrenamiento
-from interfaces.panel_resultados import (PanelVisualizacion, PanelEstadisticas,
-                                         PanelResultadosCompleto, PanelEvaluacionCompleto)
-from interfaces.pantalla_login import PantallaLogin
-from interfaces.pantalla_bienvenida import PantallaBienvenida
-from utils.gestor_configuracion import cargar_config_usuario, guardar_config_usuario
-from utils.gestor_logs import configurar_logging, obtener_logger
 import torch
 import qtawesome as qta
 
-# Gestores de Aplicación (TESIS)
-from aplicacion.gestor_evaluacion import guardar_evaluacion_estimulo
-from aplicacion.gestor_generacion import guardar_imagen_numpy
+from interfaces.estilos import ESTILO_OSCURO, ESTILO_CLARO
+from interfaces.controles_personalizados import ToggleTemaNeumorfico
+from interfaces.panel_entrenamiento import (PanelConfiguracionDataset, PanelControlDCGAN,
+                                         PanelAumentoDataset, PanelControlClasificador)
+from interfaces.panel_resultados import (PanelVisualizacion, PanelEstadisticasDCGAN,
+                                         PanelEvaluacionClasificacion)
+from interfaces.pantalla_login import PantallaLogin
+from interfaces.pantalla_bienvenida import PantallaBienvenida
 
-# Inicializar logger raíz
+from utils.gestor_configuracion import cargar_config_usuario, guardar_config_usuario
+from utils.gestor_logs import configurar_logging, obtener_logger
+from utils.gestor_resultados import crear_estructura_resultados
+from utils.tensor_utils import tensor_to_numpy
+
+from modelos.dcgan import EntrenadorDCGAN
+from aplicacion.sistema_gania import SistemaGania, WorkerDCGAN, WorkerGeneracionMasiva, WorkerClasificacion
+from config import CONFIG
+
 configurar_logging()
 logger = obtener_logger("Interfaz")
 
-from modelos.dcgan import EntrenadorDCGAN, Generador
-from modelos.cyclegan import EntrenadorCycleGAN
-from utils.gestor_resultados import crear_estructura_resultados
-from aplicacion.sistema_gania import SistemaGania, EntrenadorWorker
-from utils.tensor_utils import tensor_to_numpy
-from config import CONFIG
 
-# --- COMPONENTE DE TARJETA ---
-class Card(QFrame):
+class CardPipeline(QFrame):
+    """Tarjeta interactiva para acceder a cada etapa del pipeline experimental."""
     def __init__(self, icon_name, titulo, descripcion, color_borde="#3B82F6", callback=None):
         super().__init__()
         self.callback = callback
@@ -46,25 +43,24 @@ class Card(QFrame):
         self.setCursor(Qt.PointingHandCursor)
         self.setStyleSheet(f"QFrame#ModuloCard {{ border-left: 6px solid {color_borde}; }}")
 
-        # Sombra dinámica
         self.shadow = QGraphicsDropShadowEffect(self)
-        self.shadow.setBlurRadius(15)
+        self.shadow.setBlurRadius(12)
         self.shadow.setXOffset(0)
         self.shadow.setYOffset(4)
-        self.shadow.setColor(QColor(0, 0, 0, 50))
+        self.shadow.setColor(QColor(0, 0, 0, 40))
         self.setGraphicsEffect(self.shadow)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(25, 20, 25, 20)
-        layout.setSpacing(12)
+        layout.setContentsMargins(20, 15, 20, 15)
+        layout.setSpacing(8)
 
         header = QHBoxLayout()
         icon_lbl = QLabel()
-        icon_lbl.setPixmap(qta.icon(icon_name, color=color_borde).pixmap(40, 40))
+        icon_lbl.setPixmap(qta.icon(icon_name, color=color_borde).pixmap(32, 32))
         icon_lbl.setStyleSheet("background: transparent;")
 
         title_lbl = QLabel(titulo)
-        title_lbl.setStyleSheet("font-size: 18px; font-weight: bold; background: transparent;")
+        title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; background: transparent;")
 
         header.addWidget(icon_lbl)
         header.addWidget(title_lbl)
@@ -73,13 +69,13 @@ class Card(QFrame):
 
         desc_lbl = QLabel(descripcion)
         desc_lbl.setWordWrap(True)
-        desc_lbl.setStyleSheet("font-size: 13px; color: #64748B; background: transparent;")
+        desc_lbl.setStyleSheet("font-size: 12px; color: #64748B; background: transparent;")
         layout.addWidget(desc_lbl)
 
         footer = QHBoxLayout()
         footer.addStretch()
-        arrow = QLabel("Acceder →")
-        arrow.setStyleSheet("font-weight: bold; color: #3B82F6; background: transparent;")
+        arrow = QLabel("Ir a Etapa →")
+        arrow.setStyleSheet("font-weight: bold; color: #3B82F6; background: transparent; font-size: 12px;")
         footer.addWidget(arrow)
         layout.addLayout(footer)
 
@@ -92,24 +88,21 @@ class Card(QFrame):
 class VentanaGAN(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("GANIA 2.0 - Capa de Diseño Humano")
+        self.setWindowTitle("GANIA 2.0 - Generación por Clases y Aumento por Porcentaje con DCGAN")
         self.resize(1280, 850)
 
-        # 1. Estado
+        # 1. Estado del Sistema
         self.sistema = SistemaGania()
         self.dcgan = None
-        self.cyclegan = None
-        self.epoca = 0
-        self.max_epocas = CONFIG["ENTRENAMIENTO"]["MAX_EPOCAS"]
-        self.usuario_id = "Participante_Anonimo"
+        self.usuario_id = "Investigador"
         self._buffer_imgs_reales = []
         self._buffer_imgs_falsas = []
-        self.entrenamiento_activo = False
+        self.ruta_dataset_ampliado = None
 
-        # 2. UI
+        # 2. Configurar Interfaz
         self.configurar_interfaz()
 
-        # 3. Login y Bienvenida
+        # 3. Pantalla de Bienvenida / Sesión
         config = cargar_config_usuario()
         self.pantalla_login = PantallaLogin(config)
         self.pantalla_login.senal_login_exitoso.connect(self.finalizar_login)
@@ -117,13 +110,8 @@ class VentanaGAN(QMainWindow):
 
         self.pantallas_stack.insertWidget(0, self.pantalla_login)
         self.pantallas_stack.insertWidget(1, self.pantalla_bienvenida)
-
         self.pantallas_stack.setCurrentIndex(0)
         self.header.hide()
-
-        # 4. Señales
-        self.sistema.senal_epoca_terminada.connect(self.on_epoca_terminada)
-        self.sistema.senal_error.connect(lambda e: self.barra_estado.showMessage(f"Error: {e}"))
 
     def configurar_interfaz(self):
         central = QWidget()
@@ -132,37 +120,33 @@ class VentanaGAN(QMainWindow):
         self.layout_base.setContentsMargins(0, 0, 0, 0)
         self.layout_base.setSpacing(0)
 
-        # Header
+        # --- HEADER PRINCIPAL ---
         self.header = QFrame()
-        self.header.setFixedHeight(75)
+        self.header.setFixedHeight(70)
         self.header.setObjectName("MainHeader")
         layout_h = QHBoxLayout(self.header)
-        layout_h.setContentsMargins(25, 0, 25, 0)
-        
+        layout_h.setContentsMargins(20, 0, 20, 0)
+
         self.lbl_titulo_app = QLabel("GANIA 2.0")
-        self.lbl_titulo_app.setStyleSheet("font-size: 22px; font-weight: 800; color: #3B82F6;")
+        self.lbl_titulo_app.setStyleSheet("font-size: 20px; font-weight: 800; color: #3B82F6;")
 
-        self.lbl_pantalla_actual = QLabel("|  DASHBOARD")
-        self.lbl_pantalla_actual.setStyleSheet("font-size: 14px; font-weight: 500; color: #94A3B8; margin-left: 10px;")
+        self.lbl_pantalla_actual = QLabel("|  PIPELINE EXPERIMENTAL")
+        self.lbl_pantalla_actual.setStyleSheet("font-size: 13px; font-weight: 500; color: #94A3B8; margin-left: 10px;")
 
-        # Menú Superior
+        # Menú Superior de Navegación
         self.btn_nav_home = QPushButton(" Inicio")
-        self.btn_nav_home.setIcon(qta.icon("fa5s.home", color="white"))
-        self.btn_nav_home.clicked.connect(lambda: self.cambiar_pantalla(2, "Dashboard Principal"))
+        self.btn_nav_home.setIcon(qta.icon("fa5s.home", color="white", color_active="white", color_disabled="white"))
+        self.btn_nav_home.clicked.connect(lambda: self.cambiar_pantalla(2, "Dashboard Pipeline"))
 
-        self.btn_nav_train = QPushButton(" Entrenamiento")
-        self.btn_nav_train.setIcon(qta.icon("fa5s.magic", color="white"))
-        self.btn_nav_train.clicked.connect(lambda: self.cambiar_pantalla(3, "Entrenamiento"))
+        self.btn_nav_dcgan = QPushButton(" DCGAN")
+        self.btn_nav_dcgan.setIcon(qta.icon("fa5s.brain", color="white", color_active="white", color_disabled="white"))
+        self.btn_nav_dcgan.clicked.connect(lambda: self.cambiar_pantalla(3, "Entrenamiento DCGAN por Clase"))
 
-        self.btn_nav_results = QPushButton(" Resultados")
-        self.btn_nav_results.setIcon(qta.icon("fa5s.chart-bar", color="white"))
-        self.btn_nav_results.clicked.connect(lambda: self.cambiar_pantalla(4, "Galería"))
+        self.btn_nav_aumento = QPushButton(" Aumento")
+        self.btn_nav_aumento.setIcon(qta.icon("fa5s.magic", color="white", color_active="white", color_disabled="white"))
+        self.btn_nav_aumento.clicked.connect(lambda: self.cambiar_pantalla(4, "Dataset Ampliado por Porcentaje"))
 
-        self.btn_nav_eval = QPushButton(" Evaluación")
-        self.btn_nav_eval.setIcon(qta.icon("fa5s.clipboard-check", color="white"))
-        self.btn_nav_eval.clicked.connect(lambda: self.cambiar_pantalla(5, "Evaluación"))
-
-        self.nav_buttons = [self.btn_nav_home, self.btn_nav_train, self.btn_nav_results, self.btn_nav_eval]
+        self.nav_buttons = [self.btn_nav_home, self.btn_nav_dcgan, self.btn_nav_aumento]
 
         self.toggle_tema = ToggleTemaNeumorfico()
         self.toggle_tema.tema_cambiado.connect(self.cambiar_tema)
@@ -179,44 +163,79 @@ class VentanaGAN(QMainWindow):
         self.pantallas_stack = QStackedWidget()
         self.layout_base.addWidget(self.pantallas_stack)
 
-        # DASHBOARD (2)
+        # =========================================================================
+        # 1. PANTALLA DASHBOARD (2) - Vista General del Pipeline
+        # =========================================================================
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
-        dash_content = QWidget(); layout_dash = QVBoxLayout(dash_content); layout_dash.setContentsMargins(40, 40, 40, 40); layout_dash.setSpacing(25)
-        layout_dash.addWidget(QLabel("Laboratorio de Co-Creación", styleSheet="font-size: 28px; font-weight: bold; color: #1E293B;"))
-        layout_dash.addWidget(Card("fa5s.magic", "Entrenamiento Creativo", "Configura e inicia procesos de IA.", "#3B82F6", lambda: self.cambiar_pantalla(3, "Entrenamiento")))
-        layout_dash.addWidget(Card("fa5s.images", "Galería de Resultados", "Inspecciona y organiza muestras.", "#10B981", lambda: self.cambiar_pantalla(4, "Galería")))
-        layout_dash.addWidget(Card("fa5s.clipboard-check", "Evaluación de Calidad", "Registra hallazgos técnicos de tesis.", "#8B5CF6", lambda: self.cambiar_pantalla(5, "Evaluación")))
+        dash_content = QWidget(); dash_content.setObjectName("DashboardContent"); layout_dash = QVBoxLayout(dash_content); layout_dash.setContentsMargins(35, 30, 35, 30); layout_dash.setSpacing(20)
+
+        lbl_welcome = QLabel("Pipeline de Generación y Aumento de Datos por Porcentaje")
+        lbl_welcome.setObjectName("WelcomeTitle")
+        layout_dash.addWidget(lbl_welcome)
+
+        layout_dash.addWidget(CardPipeline("fa5s.database", "1. Dataset de Entrada & Clases", "Detección automática de clases y conteo de imágenes originales.", "#3B82F6", lambda: self.cambiar_pantalla(3, "Entrenamiento DCGAN por Clase")))
+        layout_dash.addWidget(CardPipeline("fa5s.brain", "2. Entrenamiento DCGAN por Clase", "Entrenamiento exclusivo por clase y guardado de checkpoint.", "#8B5CF6", lambda: self.cambiar_pantalla(3, "Entrenamiento DCGAN por Clase")))
+        layout_dash.addWidget(CardPipeline("fa5s.magic", "3. Aumento por Porcentaje", "Selección de porcentaje (e.g. 25%), generación sintética y fusión del dataset ampliado.", "#10B981", lambda: self.cambiar_pantalla(4, "Dataset Ampliado por Porcentaje")))
+
         layout_dash.addStretch(); scroll.setWidget(dash_content); self.pantallas_stack.addWidget(scroll)
 
-        # ENTRENAMIENTO (3)
-        self.pantalla_entreno = QWidget(); layout_e = QHBoxLayout(self.pantalla_entreno)
-        self.panel_controles = PanelModelo(); self.panel_entrenamiento = PanelEntrenamiento()
-        self.panel_entrenamiento.senal_iniciar.connect(self.iniciar_entrenamiento)
-        self.panel_entrenamiento.senal_detener.connect(self.detener_entrenamiento)
-        izq = QVBoxLayout(); scroll_izq = QScrollArea(); scroll_izq.setFixedWidth(420); scroll_izq.setWidgetResizable(True)
-        cont_izq = QWidget(); l_izq = QVBoxLayout(cont_izq); l_izq.addWidget(self.panel_controles); l_izq.addWidget(self.panel_entrenamiento); l_izq.addStretch()
-        scroll_izq.setWidget(cont_izq); izq.addWidget(scroll_izq); layout_e.addLayout(izq)
-        der = QVBoxLayout(); self.tabs = QTabWidget()
-        self.p_dcgan = PanelVisualizacion("Formas"); self.p_cyclegan = PanelVisualizacion("Estilos")
-        self.tabs.addTab(self.p_dcgan, "Formas"); self.tabs.addTab(self.p_cyclegan, "Estilos")
-        self.stats = PanelEstadisticas()
+        # =========================================================================
+        # 2. PANTALLA ENTRENAMIENTO DCGAN (3)
+        # =========================================================================
+        self.pantalla_dcgan = QWidget(); layout_dcgan = QHBoxLayout(self.pantalla_dcgan)
 
-        self.panel_inferior = QTabWidget(); self.panel_inferior.setFixedHeight(280)
+        # Panel Izquierdo: Controles
+        self.panel_dataset = PanelConfiguracionDataset()
+        self.panel_control_dcgan = PanelControlDCGAN()
+        self.panel_control_dcgan.senal_iniciar_dcgan.connect(self.iniciar_entrenamiento_dcgan)
+        self.panel_control_dcgan.senal_detener_dcgan.connect(self.detener_dcgan)
+
+        scroll_izq = QScrollArea(); scroll_izq.setFixedWidth(400); scroll_izq.setWidgetResizable(True)
+        cont_izq = QWidget(); l_izq = QVBoxLayout(cont_izq)
+        l_izq.addWidget(self.panel_dataset)
+        l_izq.addWidget(self.panel_control_dcgan)
+        l_izq.addStretch(); scroll_izq.setWidget(cont_izq)
+        layout_dcgan.addWidget(scroll_izq)
+
+        # Panel Derecho: Visualización y Gráficos (Rejilla de 3x3)
+        der = QVBoxLayout()
+        self.panel_vis_dcgan = PanelVisualizacion("Muestras Sintéticas DCGAN (Rejilla 3x3)")
+        self.stats_dcgan = PanelEstadisticasDCGAN()
+
+        self.panel_inferior = QTabWidget(); self.panel_inferior.setFixedHeight(270)
         self.log_eventos = QTextEdit(); self.log_eventos.setReadOnly(True); self.log_eventos.setObjectName("BitacoraLog")
-        self.panel_inferior.addTab(self.stats, "Gráficos de Convergencia")
+        self.panel_inferior.addTab(self.stats_dcgan, "Gráficos de Pérdida & FID")
         self.panel_inferior.addTab(self.log_eventos, "Bitácora del Sistema")
 
-        der.addWidget(self.tabs, 1); der.addWidget(self.panel_inferior, 0); layout_e.addLayout(der, 1)
-        self.pantallas_stack.addWidget(self.pantalla_entreno)
+        der.addWidget(self.panel_vis_dcgan, 1)
+        der.addWidget(self.panel_inferior, 0)
+        layout_dcgan.addLayout(der, 1)
 
-        # GALERÍA (4)
-        self.pantalla_resultados = PanelResultadosCompleto()
-        self.pantalla_resultados.senal_guardar_especifica.connect(self.procesar_guardado_galeria)
-        self.pantallas_stack.addWidget(self.pantalla_resultados)
+        self.pantallas_stack.addWidget(self.pantalla_dcgan)
 
-        # EVALUACIÓN (5)
-        self.pantalla_evaluacion = PanelEvaluacionCompleto(callback_guardar=self.procesar_evaluacion_tesis)
-        self.pantallas_stack.addWidget(self.pantalla_evaluacion)
+        # =========================================================================
+        # 3. PANTALLA AUMENTO DE DATASET (4)
+        # =========================================================================
+        self.pantalla_aumento = QWidget(); layout_aumento = QHBoxLayout(self.pantalla_aumento)
+
+        self.panel_control_aumento = PanelAumentoDataset()
+        self.panel_control_aumento.senal_generar_aumento.connect(self.ejecutar_aumento_dataset)
+
+        scroll_aum = QScrollArea(); scroll_aum.setFixedWidth(420); scroll_aum.setWidgetResizable(True)
+        cont_aum = QWidget(); l_aum = QVBoxLayout(cont_aum)
+        l_aum.addWidget(self.panel_control_aumento)
+        l_aum.addStretch(); scroll_aum.setWidget(cont_aum)
+        layout_aumento.addWidget(scroll_aum)
+
+        # Vista derecha
+        der_aum = QVBoxLayout()
+        self.panel_vis_aumento = PanelVisualizacion("Vista del Dataset Ampliado (Rejilla 3x3 Sintéticas)")
+        der_aum.addWidget(self.panel_vis_aumento)
+        layout_aumento.addLayout(der_aum, 1)
+
+        self.pantallas_stack.addWidget(self.pantalla_aumento)
+
+        self.panel_dataset.selector_clase.currentIndexChanged.connect(self.validar_inicio_entrenamiento)
 
         self.barra_estado = QStatusBar(); self.setStatusBar(self.barra_estado)
         self.cambiar_tema(False)
@@ -231,7 +250,6 @@ class VentanaGAN(QMainWindow):
         self.setStyleSheet(ESTILO_OSCURO if oscuro else ESTILO_CLARO)
 
     def escribir_log(self, mensaje):
-        """Escribe los eventos en la bitácora debajo de la visualización."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         texto = f"[{timestamp}] {mensaje}"
         if hasattr(self, 'log_eventos'):
@@ -244,114 +262,146 @@ class VentanaGAN(QMainWindow):
         guardar_config_usuario(usuario_id, ruta_drive)
         self.pantalla_bienvenida.set_usuario(usuario_id)
         self.pantallas_stack.setCurrentIndex(1)
-        QTimer.singleShot(2500, lambda: self.cambiar_pantalla(2, "Dashboard Principal"))
+        QTimer.singleShot(2000, lambda: self.cambiar_pantalla(2, "Dashboard Pipeline"))
 
     def validar_inicio_entrenamiento(self):
-        if self.entrenamiento_activo: return
-        habilitar = False
-        o = self.panel_controles.selector_origen.currentText()
-        if o == "CIFAR-10": habilitar = True
-        elif self.panel_controles.ruta_dataset_a and os.path.exists(self.panel_controles.ruta_dataset_a): habilitar = True
-        self.panel_entrenamiento.set_habilitar_inicio(habilitar)
+        ruta_ds = self.panel_dataset.obtener_ruta_dataset()
+        clase_sel = self.panel_dataset.obtener_clase_seleccionada()
+        cant_orig = self.panel_dataset.obtener_cantidad_original_clase()
 
-    def iniciar_entrenamiento(self):
-        crear_estructura_resultados(); self.entrenamiento_activo = True
-        self.panel_entrenamiento.boton_iniciar.setEnabled(False)
-        self.panel_entrenamiento.boton_detener.setEnabled(True)
-        self.panel_controles.setEnabled(False)
-        self.stats.limpiar(); self.pantalla_resultados.limpiar_historial()
-        self.log_eventos.clear()
-        self.escribir_log("Iniciando nueva sesión de entrenamiento...")
+        # Actualizar la UI del panel de aumento con el número real de imágenes de la clase
+        self.panel_control_aumento.actualizar_conteo_original(cant_orig)
 
-        tasa = self.panel_entrenamiento.get_tasa_aprendizaje()
-        batch = self.panel_entrenamiento.get_batch_size()
+        habilitar = (ruta_ds is not None and os.path.exists(ruta_ds) and clase_sel is not None and clase_sel != "Sin clases detectadas")
+        self.panel_control_dcgan.btn_iniciar.setEnabled(habilitar)
 
-        # --- SUGERENCIA DE HIPERPARÁMETROS (Técnica de Tesis) ---
-        if tasa != 0.0002 or batch != 32:
-            mensaje_pedagogico = (
-                "¡Atención, Diseñador! Los ajustes actuales de velocidad e intensidad "
-                "están fuera de los rangos de equilibrio recomendados.\n\n"
-                "Esto podría causar que la IA genere formas caóticas o pierda la "
-                "coherencia estética en sus diseños.\n\n"
-                "¿Deseas continuar con tu configuración experimental?"
-            )
-            respuesta = QMessageBox.question(self, "Equilibrio Artístico",
-                mensaje_pedagogico, QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-            if respuesta == QMessageBox.No:
-                self.entrenamiento_activo = False
-                self.panel_entrenamiento.boton_iniciar.setEnabled(True)
-                self.panel_entrenamiento.boton_detener.setEnabled(False)
-                self.panel_controles.setEnabled(True)
-                return
+    # =========================================================================
+    # EJECUCIÓN 1: ENTRENAMIENTO DE DCGAN POR CLASE
+    # =========================================================================
+    def iniciar_entrenamiento_dcgan(self):
+        crear_estructura_resultados()
+        ruta_ds = self.panel_dataset.obtener_ruta_dataset()
+        clase_sel = self.panel_dataset.obtener_clase_seleccionada()
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.epoca = 0
-        try:
-            from utils.cargador_datos import crear_par_datasets, crear_cargador_datos_diseno
-            m = self.panel_controles.selector_modelo.currentText()
-            o = self.panel_controles.selector_origen.currentText()
-            fa = self.panel_controles.ruta_dataset_a if o == "Carpeta Local" else o
-            if "DCGAN" in m:
-                self.cargador = crear_cargador_datos_diseno(fa, batch_size=batch)
-                self.cargadores = [self.cargador]; self.dcgan = EntrenadorDCGAN(device, lr=tasa)
-            else:
-                ca, cb = crear_par_datasets(fa, self.panel_controles.ruta_dataset_b, batch_size=batch)
-                self.cargadores = [ca, cb]; self.cyclegan = EntrenadorCycleGAN(device, lr=tasa)
-            self.ejecutar_siguiente_epoca()
-        except Exception as e:
-            self.escribir_log(f"Error: {e}")
-
-    def ejecutar_siguiente_epoca(self):
-        if not self.entrenamiento_activo or self.epoca >= self.max_epocas:
-            self.escribir_log("Entrenamiento finalizado.")
-            self.panel_entrenamiento.boton_iniciar.setEnabled(True)
-            self.panel_entrenamiento.boton_detener.setEnabled(False)
-            self.panel_controles.setEnabled(True)
-            self.entrenamiento_activo = False
+        if not ruta_ds or not os.path.exists(ruta_ds):
+            QMessageBox.warning(self, "Dataset Inválido", "Por favor selecciona o descarga una carpeta/ZIP válido con imágenes.")
             return
 
-        modelo = self.dcgan or self.cyclegan
-        self.panel_entrenamiento.actualizar_progreso(self.epoca + 1, self.max_epocas)
-        self.worker = EntrenadorWorker(modelo, self.cargadores, self.epoca, self.max_epocas)
-        self.worker.senal_log.connect(self.escribir_log)
-        self.worker.finalizado.connect(self.on_epoca_terminada)
-        self.worker.start()
+        if not clase_sel or clase_sel == "Sin clases detectadas":
+            QMessageBox.warning(self, "Clase Inválida", "Por favor selecciona una clase válida para entrenar la DCGAN.")
+            return
 
-    def on_epoca_terminada(self, epoca, lg, ld, datos):
+        self.panel_control_dcgan.btn_iniciar.setEnabled(False)
+        self.panel_control_dcgan.btn_detener.setEnabled(True)
+        self.panel_control_aumento.set_estado_modelo_listo(False)
+        self.stats_dcgan.limpiar()
+        self.log_eventos.clear()
+        self._buffer_imgs_reales = []
+        self._buffer_imgs_falsas = []
+
+        lr = self.panel_control_dcgan.spin_lr.value()
+        batch = self.panel_control_dcgan.spin_batch.value()
+        epocas = self.panel_control_dcgan.spin_epocas.value()
+
+        self.escribir_log(f"Iniciando entrenamiento DCGAN exclusivo para la clase '{clase_sel}'...")
+        self.dcgan = EntrenadorDCGAN(dispositivo=self.sistema.device, lr=lr)
+
+        self.worker_dcgan = WorkerDCGAN(
+            modelo_dcgan=self.dcgan,
+            ruta_dataset=ruta_ds,
+            clase_seleccionada=clase_sel,
+            batch_size=batch,
+            lr=lr,
+            max_epocas=epocas
+        )
+        self.worker_dcgan.finalizado_epoca.connect(self.on_dcgan_epoca_terminada)
+        self.worker_dcgan.entrenamiento_completado.connect(self.on_dcgan_completado)
+        self.worker_dcgan.senal_log.connect(self.escribir_log)
+        self.worker_dcgan.error.connect(lambda e: self.barra_estado.showMessage(f"Error: {e}"))
+        self.worker_dcgan.start()
+
+    def on_dcgan_epoca_terminada(self, epoca, lg, ld, datos):
         img = datos.get('img') if isinstance(datos, dict) else datos
+        reales = datos.get('reales') if isinstance(datos, dict) else None
+
+        if reales:
+            self._buffer_imgs_reales = reales
+
         if img is not None:
-            if self.dcgan: self.p_dcgan.mostrar_imagen(img)
-            else: self.p_cyclegan.mostrar_imagen(img)
-            self.pantalla_resultados.mostrar_resultado_final(img)
-            self.stats.actualizar(epoca+1, lg, ld)
-        self.epoca += 1; self.ejecutar_siguiente_epoca()
+            self.panel_vis_dcgan.mostrar_imagen(img)
+            self._buffer_imgs_falsas.append(np.copy(img))
 
-    def detener_entrenamiento(self):
-        if not self.entrenamiento_activo: return
-        res = QMessageBox.question(self, "Detener", "¿Deseas detener el entrenamiento actual?", QMessageBox.Yes|QMessageBox.No)
-        if res == QMessageBox.Yes:
-            self.entrenamiento_activo = False
-            if hasattr(self, 'worker') and self.worker.isRunning():
-                self.worker.abortar()
-            self.barra_estado.showMessage("Entrenamiento interrumpido.")
-            self.panel_entrenamiento.boton_iniciar.setEnabled(True)
-            self.panel_entrenamiento.boton_detener.setEnabled(False)
-            self.panel_controles.setEnabled(True)
+            fid_val = div_val = None
+            if epoca == 1 or epoca % 5 == 0:
+                try:
+                    from utils.metricas_ia import calcular_metricas_calidad
+                    m = calcular_metricas_calidad(self._buffer_imgs_reales, self._buffer_imgs_falsas, dispositivo=str(self.sistema.device))
+                    fid_val, div_val = m.get("fid"), m.get("diversidad")
+                except: pass
 
-    def mostrar(self): self.show()
+            self.stats_dcgan.actualizar(epoca, lg, ld, fid=fid_val, diversidad=div_val)
 
-    def procesar_guardado_galeria(self, img, info):
-        res = guardar_imagen_numpy(img, "galeria"); self.barra_estado.showMessage(f"Guardado: {res}")
+        self.panel_control_dcgan.barra_progreso.setValue(int((epoca / self.panel_control_dcgan.spin_epocas.value()) * 100))
 
-    def procesar_evaluacion_tesis(self, s, c):
-        m = self.panel_controles.selector_modelo.currentText()
-        if guardar_evaluacion_estimulo(self.usuario_id, m, s, c):
-            QMessageBox.information(self, "Tesis", "Registrada."); self.cambiar_pantalla(2, "Dashboard Principal")
+    def on_dcgan_completado(self, msj):
+        self.escribir_log(msj)
+        self.panel_control_dcgan.btn_iniciar.setEnabled(True)
+        self.panel_control_dcgan.btn_detener.setEnabled(False)
+        self.panel_control_aumento.set_estado_modelo_listo(True)
+        clase_sel = self.panel_dataset.obtener_clase_seleccionada()
+        QMessageBox.information(self, "DCGAN Entrenada", f"DCGAN entrenada y guardada exitosamente para la clase '{clase_sel}'.\n\nEl modelo está listo para generar imágenes sintéticas por porcentaje.")
+
+    def detener_dcgan(self):
+        if hasattr(self, 'worker_dcgan') and self.worker_dcgan.isRunning():
+            self.worker_dcgan.abortar()
+            self.panel_control_dcgan.btn_iniciar.setEnabled(True)
+            self.panel_control_dcgan.btn_detener.setEnabled(False)
+            self.escribir_log("Entrenamiento de DCGAN detenido por el usuario.")
+
+    # =========================================================================
+    # EJECUCIÓN 2: AUMENTO DE DATASET POR CLASE Y PORCENTAJE
+    # =========================================================================
+    def ejecutar_aumento_dataset(self, cantidad_sinteticas):
+        if self.dcgan is None:
+            QMessageBox.warning(self, "DCGAN Requerida", "Debes entrenar la DCGAN antes de generar imágenes sintéticas.")
+            return
+
+        ruta_orig = self.panel_dataset.obtener_ruta_dataset()
+        clase_sel = self.panel_dataset.obtener_clase_seleccionada()
+
+        self.worker_aumento = WorkerGeneracionMasiva(
+            entrenador_dcgan=self.dcgan,
+            ruta_original=ruta_orig,
+            clase_seleccionada=clase_sel,
+            cantidad_sinteticas=cantidad_sinteticas
+        )
+        self.worker_aumento.senal_log.connect(self.escribir_log)
+        self.worker_aumento.completado.connect(self.on_aumento_completado)
+        self.worker_aumento.error.connect(lambda e: QMessageBox.critical(self, "Error Aumento", e))
+        self.worker_aumento.start()
+
+    def on_aumento_completado(self, ruta_ampliado, ruta_zip, img_grid_sinteticas=None):
+        self.ruta_dataset_ampliado = ruta_ampliado
+        clase_sel = self.panel_dataset.obtener_clase_seleccionada()
+        cant_orig = self.panel_dataset.obtener_cantidad_original_clase()
+        cant_sint = self.panel_control_aumento.cant_sintetica_calculada
+        total = cant_orig + cant_sint
+
+        if img_grid_sinteticas is not None:
+            self.panel_vis_aumento.mostrar_imagen(img_grid_sinteticas)
+
+        self.escribir_log(f"Dataset Ampliado creado exitosamente en {ruta_ampliado}")
+        QMessageBox.information(self, "Dataset Ampliado Creado",
+            f"Proceso de aumento finalizado sin re-entrenamiento:\n\n"
+            f"• Clase: '{clase_sel}'\n"
+            f"• Imágenes Originales: {cant_orig}\n"
+            f"• Imágenes Sintéticas Generadas: {cant_sint}\n"
+            f"• Total en Dataset Ampliado: {total}\n\n"
+            f"Ubicación: ./datos/datasets/augmented/{clase_sel}/\n"
+            f"Paquete ZIP: {ruta_zip}")
+
+    def mostrar(self):
+        self.show()
 
     def closeEvent(self, event):
-        if self.entrenamiento_activo:
-            res = QMessageBox.question(self, "Confirmar Salida", "¿Deseas cerrar la App mientras la IA trabaja?", QMessageBox.Yes|QMessageBox.No)
-            if res == QMessageBox.Yes:
-                self.detener_entrenamiento(); event.accept()
-            else: event.ignore()
-        else: event.accept()
+        event.accept()

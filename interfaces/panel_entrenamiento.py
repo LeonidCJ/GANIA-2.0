@@ -1,142 +1,199 @@
 # interfaces/panel_entrenamiento.py
+import os
+import math
 from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QLabel,
                               QComboBox, QPushButton, QDoubleSpinBox,
-                              QProgressBar, QSpinBox, QFileDialog, QCheckBox)
-from PyQt5.QtCore import pyqtSignal, Qt
+                              QProgressBar, QSpinBox, QFileDialog, QLineEdit, QMessageBox)
+from PyQt5.QtCore import pyqtSignal, Qt, QUrl
+from PyQt5.QtGui import QDesktopServices
 import qtawesome as qta
-import os
+
 from utils.gestor_logs import obtener_logger
+from utils.cargador_datos import (extraer_zip_dataset, descargar_extraer_url,
+                                  preparar_y_analizar_dataset, obtener_clases_disponibles)
 
 logger = obtener_logger("UI.Entrenamiento")
 
-class PanelModelo(QGroupBox):
+def icono_blanco(nombre):
+    """Crea un icono de QtAwesome en color blanco puro constante para todos los estados."""
+    return qta.icon(nombre, color="white", color_active="white", color_disabled="white")
+
+
+class PanelConfiguracionDataset(QGroupBox):
     def __init__(self):
-        super().__init__("1. Objetivo Creativo")
+        super().__init__("1. Dataset & Selección de Clase")
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        # Rutas locales
-        self.ruta_dataset_a = None
-        self.ruta_dataset_b = None
+        self.ruta_dataset_resuelta = None
+        self.ruta_dataset_preparada = None
+        self.clases_detectadas = {}
+        self.resumen_preparacion = {}
 
-        layout.addWidget(QLabel("¿Qué quieres que haga la IA?"))
-        self.selector_modelo = QComboBox()
-        self.selector_modelo.addItems([
-            "Explorar Formas (DCGAN)",
-            "Transformar Estilo (CycleGAN)"
-        ])
-        self.selector_modelo.setFixedHeight(35)
-        layout.addWidget(self.selector_modelo)
-
-        self.lbl_explicacion_modelo = QLabel("")
-        self.lbl_explicacion_modelo.setWordWrap(True)
-        self.lbl_explicacion_modelo.setStyleSheet("color: #94A3B8; font-size: 11px; font-style: italic; background: rgba(0,0,0,0.1); padding: 8px; border-radius: 8px;")
-        layout.addWidget(self.lbl_explicacion_modelo)
-
-        layout.addWidget(QLabel("¿Cuál es tu fuente de inspiración?"))
+        # 1. Selector de Método de Carga
+        layout.addWidget(QLabel("Método de Carga de Dataset:"))
         self.selector_origen = QComboBox()
+        self.selector_origen.addItems([
+            "Carpeta Local",
+            "Archivo Comprimido (ZIP/TGZ)",
+            "Descargar desde URL / GitHub"
+        ])
         self.selector_origen.setFixedHeight(35)
         layout.addWidget(self.selector_origen)
 
-        self.lbl_explicacion_dataset = QLabel("")
-        self.lbl_explicacion_dataset.setWordWrap(True)
-        self.lbl_explicacion_dataset.setStyleSheet("color: #94A3B8; font-size: 11px; font-style: italic; padding: 5px;")
-        layout.addWidget(self.lbl_explicacion_dataset)
+        # Controles según el origen
+        self.btn_carpeta_local = QPushButton(" Seleccionar Carpeta del Dataset")
+        self.btn_carpeta_local.setIcon(icono_blanco("fa5s.folder-open"))
+        self.btn_carpeta_local.clicked.connect(self._seleccionar_carpeta)
+        layout.addWidget(self.btn_carpeta_local)
 
-        # Botones de Carpeta Local
-        self.btn_carpeta_a = QPushButton(" Seleccionar Carpeta de Imágenes")
-        self.btn_carpeta_a.setIcon(qta.icon("fa5s.folder-open", color="white"))
-        self.btn_carpeta_a.setVisible(False)
-        self.btn_carpeta_a.clicked.connect(self._seleccionar_a)
-        layout.addWidget(self.btn_carpeta_a)
+        self.btn_zip_local = QPushButton(" Seleccionar Archivo .ZIP / .TGZ")
+        self.btn_zip_local.setIcon(icono_blanco("fa5s.file-archive"))
+        self.btn_zip_local.setVisible(False)
+        self.btn_zip_local.clicked.connect(self._seleccionar_zip)
+        layout.addWidget(self.btn_zip_local)
 
-        self.btn_carpeta_b = QPushButton(" Seleccionar Carpeta de Estilo")
-        self.btn_carpeta_b.setIcon(qta.icon("fa5s.folder-open", color="white"))
-        self.btn_carpeta_b.setVisible(False)
-        self.btn_carpeta_b.clicked.connect(self._seleccionar_b)
-        layout.addWidget(self.btn_carpeta_b)
+        self.container_url = QGroupBox("Descarga por URL Directa / GitHub")
+        layout_url = QVBoxLayout(self.container_url)
+        self.input_url = QLineEdit()
+        self.input_url.setPlaceholderText("https://www.robots.ox.ac.uk/~vgg/data/flowers/17/17flowers.tgz")
+        layout_url.addWidget(self.input_url)
 
-        self.lbl_ruta_a = QLabel("No seleccionada")
-        self.lbl_ruta_a.setStyleSheet("font-size: 10px; color: #94A3B8;")
-        self.lbl_ruta_a.setVisible(False)
-        layout.addWidget(self.lbl_ruta_a)
+        self.btn_descargar_url = QPushButton(" Descargar & Extraer")
+        self.btn_descargar_url.setIcon(icono_blanco("fa5s.download"))
+        self.btn_descargar_url.clicked.connect(self._descargar_url)
+        layout_url.addWidget(self.btn_descargar_url)
+        self.container_url.setVisible(False)
+        layout.addWidget(self.container_url)
 
-        self.selector_modelo.currentIndexChanged.connect(self.actualizar_explicacion)
-        self.selector_modelo.currentIndexChanged.connect(self.actualizar_opciones_datasets)
-        self.selector_modelo.currentIndexChanged.connect(self._actualizar_visibilidad)
-        self.selector_origen.currentIndexChanged.connect(self._actualizar_visibilidad)
-        self.selector_origen.currentTextChanged.connect(self._verificar_aviso_local)
+        # 2. Resumen de Preparación de Dataset
+        self.lbl_resumen_preparacion = QLabel("Formato: Pendiente de análisis")
+        self.lbl_resumen_preparacion.setWordWrap(True)
+        self.lbl_resumen_preparacion.setStyleSheet("font-size: 11px; color: #60A5FA; background: rgba(59, 130, 246, 0.1); padding: 8px; border-radius: 8px;")
+        layout.addWidget(self.lbl_resumen_preparacion)
 
-        self.actualizar_explicacion()
-        self.actualizar_opciones_datasets()
-        self._actualizar_visibilidad()
+        # 3. Selector de Clase para DCGAN
+        layout.addWidget(QLabel("Clases Detectadas (Selecciona una para DCGAN):"))
+        self.selector_clase = QComboBox()
+        self.selector_clase.setFixedHeight(35)
+        layout.addWidget(self.selector_clase)
 
-    def actualizar_opciones_datasets(self):
-        modelo = self.selector_modelo.currentText()
-        self.selector_origen.blockSignals(True)
-        self.selector_origen.clear()
-        if "DCGAN" in modelo:
-            self.selector_origen.addItems(["CIFAR-10", "CelebA (Rostros)", "Carpeta Local"])
+        # Estado de la Ruta
+        self.lbl_ruta_estado = QLabel("Estado: Ningún dataset cargado")
+        self.lbl_ruta_estado.setWordWrap(True)
+        self.lbl_ruta_estado.setStyleSheet("font-size: 11px; color: #94A3B8; font-style: italic;")
+        layout.addWidget(self.lbl_ruta_estado)
+
+        self.selector_origen.currentTextChanged.connect(self._actualizar_visibilidad)
+        self._actualizar_visibilidad(self.selector_origen.currentText())
+
+    def _actualizar_visibilidad(self, texto):
+        self.btn_carpeta_local.setVisible(texto == "Carpeta Local")
+        self.btn_zip_local.setVisible(texto == "Archivo Comprimido (ZIP/TGZ)")
+        self.container_url.setVisible(texto == "Descargar desde URL / GitHub")
+
+    def _seleccionar_carpeta(self):
+        ruta = QFileDialog.getExistingDirectory(self, "Seleccionar Carpeta del Dataset")
+        if ruta:
+            self.ruta_dataset_resuelta = ruta
+            self.lbl_ruta_estado.setText(f"Carpeta: ...{ruta[-35:]}")
+            self.procesar_y_analizar_dataset()
+
+    def _seleccionar_zip(self):
+        ruta_zip, _ = QFileDialog.getOpenFileName(self, "Seleccionar Dataset Comprimido", "", "Archivos Comprimidos (*.zip *.tgz *.tar.gz *.tar)")
+        if ruta_zip:
+            try:
+                ruta_extraida = extraer_zip_dataset(ruta_zip)
+                self.ruta_dataset_resuelta = ruta_extraida
+                self.lbl_ruta_estado.setText(f"Extraído en: ...{ruta_extraida[-30:]}")
+                QMessageBox.information(self, "Descompresión Exitosa", f"Dataset descompuesto correctamente en:\n{ruta_extraida}")
+                self.procesar_y_analizar_dataset()
+            except Exception as e:
+                QMessageBox.critical(self, "Error al Descomprimir", f"No se pudo descomprimir el archivo:\n{e}")
+
+    def _descargar_url(self):
+        url = self.input_url.text().strip()
+        if not url.startswith("http"):
+            QMessageBox.warning(self, "URL Inválida", "Ingresa una URL válida que empiece con http:// o https://")
+            return
+
+        try:
+            self.btn_descargar_url.setEnabled(False)
+            self.lbl_ruta_estado.setText("Descargando y descomprimiendo dataset...")
+            ruta_descargada = descargar_extraer_url(url, callback_log=lambda m: logger.info(m))
+            self.ruta_dataset_resuelta = ruta_descargada
+            self.lbl_ruta_estado.setText(f"URL Extraída en: ...{ruta_descargada[-30:]}")
+            QMessageBox.information(self, "Descarga Completada", f"Dataset descargado y listo en:\n{ruta_descargada}")
+            self.procesar_y_analizar_dataset()
+        except Exception as e:
+            QMessageBox.critical(self, "Error Descarga", f"No se pudo descargar o descomprimir el dataset:\n{e}")
+        finally:
+            self.btn_descargar_url.setEnabled(True)
+
+    def procesar_y_analizar_dataset(self):
+        """Ejecuta el módulo universal de preparación y actualiza la UI."""
+        if not self.ruta_dataset_resuelta or not os.path.exists(self.ruta_dataset_resuelta):
+            return
+
+        self.ruta_dataset_preparada, self.resumen_preparacion = preparar_y_analizar_dataset(self.ruta_dataset_resuelta)
+
+        # Formatear Resumen Visual
+        fmt = self.resumen_preparacion.get("formato", "Desconocido")
+        train_map = self.resumen_preparacion.get("train", {})
+        val_map = self.resumen_preparacion.get("val", {})
+        test_map = self.resumen_preparacion.get("test", {})
+        inv = self.resumen_preparacion.get("invalidas", 0)
+
+        n_clases = len(train_map)
+        n_train = sum(train_map.values())
+        n_val = sum(val_map.values())
+        n_test = sum(test_map.values())
+
+        txt_resumen = (
+            f"<b>Estructura:</b> {fmt}<br>"
+            f"<b>Clases Totales:</b> {n_clases} | <b>Imágenes Válidas:</b> {n_train + n_val + n_test}<br>"
+            f"• Train: {n_train} | Val: {n_val} | Test: {n_test}<br>"
+            f"• Archivos inválidos/omitidos: {inv}"
+        )
+        self.lbl_resumen_preparacion.setText(txt_resumen)
+
+        self.actualizar_clases_detectadas()
+
+    def actualizar_clases_detectadas(self):
+        """Puebla el selector de clases con las clases analizadas."""
+        self.selector_clase.blockSignals(True)
+        self.selector_clase.clear()
+
+        train_map = self.resumen_preparacion.get("train", {})
+        if not train_map:
+            train_map = self.resumen_preparacion.get("total_por_clase", {})
+
+        self.clases_detectadas = train_map
+
+        if self.clases_detectadas:
+            for clase_nom, cant in self.clases_detectadas.items():
+                self.selector_clase.addItem(f"{clase_nom} ({cant} imágenes)", userData=clase_nom)
         else:
-            self.selector_origen.addItems(["Apple ↔ Orange", "Van Gogh ↔ Photo", "Summer ↔ Winter", "Carpeta Local"])
-        self.selector_origen.blockSignals(False)
-        self.actualizar_explicacion_dataset()
+            self.selector_clase.addItem("Sin clases detectadas", userData=None)
 
-    def actualizar_explicacion(self):
-        descripciones = {
-            "Explorar Formas (DCGAN)": "Crea bocetos totalmente nuevos para formas desde el lienzo en blanco basándose en patrones aprendidos.",
-            "Transformar Estilo (CycleGAN)": "Toma tus imágenes y cámbiales el 'vibe' o la textura para explorar variantes estéticas manteniendo la estructura original."
-        }
-        modelo = self.selector_modelo.currentText()
-        self.lbl_explicacion_modelo.setText(descripciones.get(modelo, ""))
-
-    def actualizar_explicacion_dataset(self):
-        descripciones = {
-            "CIFAR-10": "Muestras de objetos reales (autos, animales, barcos).",
-            "CelebA (Rostros)": "Más de 200,000 rostros para entrenamiento de alta fidelidad.",
-            "Apple ↔ Orange": "Ideal para estudiar texturas y transformaciones orgánicas.",
-            "Van Gogh ↔ Photo": "El estándar para transferencia de estilo artístico.",
-            "Summer ↔ Winter": "Cambios de atmósfera y clima en paisajes.",
-            "Carpeta Local": "Usa tus propios archivos de imagen desde el disco."
-        }
-        dataset = self.selector_origen.currentText()
-        if dataset:
-            self.lbl_explicacion_dataset.setText(descripciones.get(dataset, ""))
-
-    def _verificar_aviso_local(self, texto):
-        if texto == "Carpeta Local":
-            from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.information(self, "Requisitos de Inspiración Propia",
-                "¡Excelente elección! Para que la IA aprenda bien de tus archivos, asegúrate de cumplir lo siguiente:\n\n"
-                "• Cantidad: Al menos 100 imágenes (recomendado 500+).\n"
-                "• Formato: Archivos .jpg o .png legibles.\n"
-                "• Proporción: Se recomienda que las imágenes sean cuadradas.\n"
-                "• Contenido: Trata de que las imágenes tengan un estilo visual similar.")
-
-    def _actualizar_visibilidad(self):
-        modelo = self.selector_modelo.currentText()
-        origen = self.selector_origen.currentText()
-        es_local = (origen == "Carpeta Local")
-        es_cycle = ("CycleGAN" in modelo)
-
-        self.btn_carpeta_a.setVisible(es_local)
-        self.lbl_ruta_a.setVisible(es_local)
-        self.btn_carpeta_b.setVisible(es_local and es_cycle)
-
+        self.selector_clase.blockSignals(False)
         self._notificar_cambio()
 
-    def _seleccionar_a(self):
-        ruta = QFileDialog.getExistingDirectory(self, "Seleccionar Carpeta de Imágenes")
-        if ruta:
-            self.ruta_dataset_a = ruta
-            self.lbl_ruta_a.setText(f"Ruta: ...{ruta[-30:]}")
-            self._notificar_cambio()
+    def obtener_ruta_dataset(self):
+        return self.ruta_dataset_preparada or self.ruta_dataset_resuelta
 
-    def _seleccionar_b(self):
-        ruta = QFileDialog.getExistingDirectory(self, "Seleccionar Carpeta de Estilo")
-        if ruta:
-            self.ruta_dataset_b = ruta
-            self._notificar_cambio()
+    def obtener_clase_seleccionada(self):
+        data = self.selector_clase.currentData()
+        if data:
+            return data
+        txt = self.selector_clase.currentText()
+        if txt and "(" in txt:
+            return txt.split("(")[0].strip()
+        return txt if txt else "clase_01"
+
+    def obtener_cantidad_original_clase(self):
+        clase_sel = self.obtener_clase_seleccionada()
+        return self.clases_detectadas.get(clase_sel, 0)
 
     def _notificar_cambio(self):
         parent = self.parent()
@@ -147,95 +204,202 @@ class PanelModelo(QGroupBox):
             parent = parent.parent()
 
 
-class PanelEntrenamiento(QGroupBox):
-    senal_iniciar = pyqtSignal()
-    senal_detener = pyqtSignal()
+class PanelControlDCGAN(QGroupBox):
+    senal_iniciar_dcgan = pyqtSignal()
+    senal_detener_dcgan = pyqtSignal()
 
     def __init__(self):
-        super().__init__("2. Control de Evolución")
+        super().__init__("2. Entrenamiento DCGAN por Clase")
         layout = QVBoxLayout(self)
-        layout.setSpacing(15)
+        layout.setSpacing(12)
 
-        # 1. Learning Rate
-        layout.addWidget(QLabel("Velocidad de Evolución (Learning Rate)"))
-        self.spin_tasa_aprendizaje = QDoubleSpinBox()
-        self.spin_tasa_aprendizaje.setDecimals(6)
-        self.spin_tasa_aprendizaje.setRange(0.000001, 0.01)
-        self.spin_tasa_aprendizaje.setSingleStep(0.0001)
-        self.spin_tasa_aprendizaje.setValue(0.0002)
-        self.spin_tasa_aprendizaje.setFixedHeight(35)
-        layout.addWidget(self.spin_tasa_aprendizaje)
+        # Learning Rate
+        layout.addWidget(QLabel("Tasa de Aprendizaje (LR)"))
+        self.spin_lr = QDoubleSpinBox()
+        self.spin_lr.setDecimals(6)
+        self.spin_lr.setRange(0.000001, 0.01)
+        self.spin_lr.setValue(0.0002)
+        self.spin_lr.setFixedHeight(35)
+        layout.addWidget(self.spin_lr)
 
-        # 2. Batch Size
-        layout.addWidget(QLabel("Intensidad de Trabajo (Batch Size)"))
+        # Batch Size
+        layout.addWidget(QLabel("Tamaño de Lote (Batch Size)"))
         self.spin_batch = QSpinBox()
-        self.spin_batch.setRange(1, 128)
+        self.spin_batch.setRange(8, 256)
         self.spin_batch.setValue(32)
         self.spin_batch.setFixedHeight(35)
         layout.addWidget(self.spin_batch)
 
-        # 3. Épocas
-        layout.addWidget(QLabel("Pasos de Inspiración (Épocas)"))
+        # Épocas
+        layout.addWidget(QLabel("Épocas de Entrenamiento"))
         self.spin_epocas = QSpinBox()
-        self.spin_epocas.setRange(1, 1000)
-        self.spin_epocas.setValue(50)
+        self.spin_epocas.setRange(1, 500)
+        self.spin_epocas.setValue(25)
         self.spin_epocas.setFixedHeight(35)
         layout.addWidget(self.spin_epocas)
 
-        # 4. Mode Collapse (Checkbox)
-        self.chk_early_stopping = QCheckBox("Evitar que la IA se 'trabe' (Auto-stop)")
-        self.chk_early_stopping.setChecked(True)
-        self.chk_early_stopping.setStyleSheet("color: #64748B; font-size: 11px;")
-        layout.addWidget(self.chk_early_stopping)
-
+        # Progreso
         self.barra_progreso = QProgressBar()
-        self.barra_progreso.setFixedHeight(22)
+        self.barra_progreso.setFixedHeight(20)
         self.barra_progreso.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.barra_progreso)
 
-        self.lbl_epoca = QLabel("Esperando señal creativa...")
-        self.lbl_epoca.setAlignment(Qt.AlignCenter)
-        self.lbl_epoca.setStyleSheet("font-size: 11px; color: #94A3B8;")
-        layout.addWidget(self.lbl_epoca)
+        # Botones
+        btn_layout = QHBoxLayout()
+        self.btn_iniciar = QPushButton(" Entrenar DCGAN")
+        self.btn_iniciar.setIcon(icono_blanco("fa5s.play"))
+        self.btn_iniciar.setFixedHeight(40)
+        self.btn_iniciar.clicked.connect(lambda: self.senal_iniciar_dcgan.emit())
 
-        self.boton_iniciar = QPushButton(" Iniciar Creación")
-        self.boton_iniciar.setObjectName("BotonIniciar")
-        self.boton_iniciar.setIcon(qta.icon("fa5s.play", color="white"))
-        self.boton_iniciar.setFixedHeight(45)
+        self.btn_detener = QPushButton(" Detener")
+        self.btn_detener.setIcon(icono_blanco("fa5s.stop"))
+        self.btn_detener.setFixedHeight(40)
+        self.btn_detener.setEnabled(False)
+        self.btn_detener.clicked.connect(lambda: self.senal_detener_dcgan.emit())
 
-        self.boton_detener = QPushButton(" Detener Proceso")
-        self.boton_detener.setObjectName("BotonDetener")
-        self.boton_detener.setIcon(qta.icon("fa5s.stop", color="white"))
-        self.boton_detener.setFixedHeight(45)
-        self.boton_detener.setEnabled(False)
+        btn_layout.addWidget(self.btn_iniciar)
+        btn_layout.addWidget(self.btn_detener)
+        layout.addLayout(btn_layout)
 
-        self.boton_iniciar.clicked.connect(self.iniciar)
-        self.boton_detener.clicked.connect(self.detener)
 
-        layout.addWidget(self.boton_iniciar)
-        layout.addWidget(self.boton_detener)
+class PanelAumentoDataset(QGroupBox):
+    senal_generar_aumento = pyqtSignal(int)
 
-    def iniciar(self):
-        self.senal_iniciar.emit()
+    def __init__(self):
+        super().__init__("3. Generación Sintética y Dataset Ampliado")
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
 
-    def detener(self):
-        self.senal_detener.emit()
+        self.cant_original = 0
+        self.cant_sintetica_calculada = 0
+        self.ruta_sinteticas = "./datos/datasets/synthetic"
+        self.ruta_ampliado = "./datos/datasets/augmented"
 
-    def get_tasa_aprendizaje(self):
-        return self.spin_tasa_aprendizaje.value()
+        # Estado del Modelo Entrenado
+        self.lbl_estado_modelo = QLabel("Modelo DCGAN: No entrenado")
+        self.lbl_estado_modelo.setStyleSheet("font-weight: bold; color: #EF4444; font-size: 12px;")
+        layout.addWidget(self.lbl_estado_modelo)
 
-    def get_batch_size(self):
-        return self.spin_batch.value()
+        # 1. Conteo Original
+        layout.addWidget(QLabel("Imágenes originales en la clase:"))
+        self.lbl_cant_original = QLabel("0 imágenes")
+        self.lbl_cant_original.setStyleSheet("font-size: 14px; font-weight: bold; color: #3B82F6;")
+        layout.addWidget(self.lbl_cant_original)
 
-    def set_habilitar_inicio(self, habilitar: bool):
-        self.boton_iniciar.setEnabled(habilitar)
+        # 2. Selector de Porcentaje
+        layout.addWidget(QLabel("Porcentaje de aumento respecto al original:"))
+        self.combo_porcentaje = QComboBox()
+        self.combo_porcentaje.addItems(["10%", "25%", "50%", "75%", "100%", "200%"])
+        self.combo_porcentaje.setCurrentText("25%")
+        self.combo_porcentaje.setFixedHeight(35)
+        self.combo_porcentaje.currentTextChanged.connect(self._recalcular_sinteticas)
+        layout.addWidget(self.combo_porcentaje)
 
-    def actualizar_progreso(self, epoca_actual, max_epocas):
-        self.barra_progreso.setMaximum(max_epocas)
-        self.barra_progreso.setValue(epoca_actual)
-        self.lbl_epoca.setText(f"Paso Creativo {epoca_actual} de {max_epocas}")
+        # 3. Cantidad Sintética Calculada
+        layout.addWidget(QLabel("Imágenes sintéticas a generar:"))
+        self.lbl_cant_sintetica = QLabel("0 imágenes")
+        self.lbl_cant_sintetica.setWordWrap(True)
+        self.lbl_cant_sintetica.setStyleSheet("font-size: 14px; font-weight: bold; color: #10B981;")
+        layout.addWidget(self.lbl_cant_sintetica)
 
-    def reiniciar_progreso(self, max_epocas):
-        self.barra_progreso.setMaximum(max_epocas)
-        self.barra_progreso.setValue(0)
-        self.lbl_epoca.setText("Iniciando exploración...")
+        # Botón de Generación sin Reentrenamiento
+        self.btn_generar_aumento = QPushButton(" Generar Imágenes Sintéticas")
+        self.btn_generar_aumento.setIcon(icono_blanco("fa5s.magic"))
+        self.btn_generar_aumento.setFixedHeight(42)
+        self.btn_generar_aumento.setEnabled(False)
+        self.btn_generar_aumento.clicked.connect(self._al_generar)
+        layout.addWidget(self.btn_generar_aumento)
+
+        # Botones de Explorador de Archivos
+        self.btn_abrir_sinteticas = QPushButton("Abrir Carpeta de Sintéticas")
+        self.btn_abrir_sinteticas.setIcon(icono_blanco("fa5s.folder-open"))
+        self.btn_abrir_sinteticas.setFixedHeight(36)
+        self.btn_abrir_sinteticas.clicked.connect(self._abrir_folder_sinteticas)
+        layout.addWidget(self.btn_abrir_sinteticas)
+
+        self.btn_abrir_ampliado = QPushButton("Abrir Dataset Ampliado")
+        self.btn_abrir_ampliado.setIcon(icono_blanco("fa5s.folder-open"))
+        self.btn_abrir_ampliado.setFixedHeight(36)
+        self.btn_abrir_ampliado.clicked.connect(self._abrir_folder_ampliado)
+        layout.addWidget(self.btn_abrir_ampliado)
+
+    def actualizar_conteo_original(self, cantidad):
+        self.cant_original = max(0, cantidad)
+        self.lbl_cant_original.setText(f"{self.cant_original} imágenes")
+        self._recalcular_sinteticas()
+
+    def set_estado_modelo_listo(self, listo=True):
+        if listo:
+            self.lbl_estado_modelo.setText("Modelo DCGAN: Entrenado y listo ✓")
+            self.lbl_estado_modelo.setStyleSheet("font-weight: bold; color: #10B981; font-size: 12px;")
+            self.btn_generar_aumento.setEnabled(True)
+        else:
+            self.lbl_estado_modelo.setText("Modelo DCGAN: No entrenado")
+            self.lbl_estado_modelo.setStyleSheet("font-weight: bold; color: #EF4444; font-size: 12px;")
+            self.btn_generar_aumento.setEnabled(False)
+
+    def _recalcular_sinteticas(self):
+        txt_pct = self.combo_porcentaje.currentText().replace("%", "").strip()
+        try:
+            pct = int(txt_pct)
+        except ValueError:
+            pct = 25
+
+        if self.cant_original > 0:
+            self.cant_sintetica_calculada = math.ceil(self.cant_original * pct / 100.0)
+        else:
+            self.cant_sintetica_calculada = 0
+
+        total_ampliado = self.cant_original + self.cant_sintetica_calculada
+        self.lbl_cant_sintetica.setText(f"{self.cant_sintetica_calculada} imágenes\n(Total ampliado: {total_ampliado})")
+
+    def _al_generar(self):
+        if self.cant_sintetica_calculada <= 0:
+            QMessageBox.warning(self, "Aumento Nulo", "La cantidad de imágenes sintéticas a generar debe ser mayor a 0.")
+            return
+        self.senal_generar_aumento.emit(self.cant_sintetica_calculada)
+
+    def _abrir_folder_sinteticas(self):
+        os.makedirs(self.ruta_sinteticas, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(self.ruta_sinteticas)))
+
+    def _abrir_folder_ampliado(self):
+        os.makedirs(self.ruta_ampliado, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(self.ruta_ampliado)))
+
+
+class PanelControlClasificador(QGroupBox):
+    """Panel de Clasificación (Oculto temporalmente)."""
+    senal_iniciar_clasificacion = pyqtSignal(str, int, float)
+
+    def __init__(self):
+        super().__init__("4. Clasificación Comparativa")
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        layout.addWidget(QLabel("Arquitectura del Clasificador:"))
+        self.selector_modelo = QComboBox()
+        self.selector_modelo.addItems(["ResNet18", "CNN_Simple"])
+        self.selector_modelo.setFixedHeight(35)
+        layout.addWidget(self.selector_modelo)
+
+        layout.addWidget(QLabel("Épocas Clasificador:"))
+        self.spin_epocas_clf = QSpinBox()
+        self.spin_epocas_clf.setRange(1, 100)
+        self.spin_epocas_clf.setValue(10)
+        self.spin_epocas_clf.setFixedHeight(35)
+        layout.addWidget(self.spin_epocas_clf)
+
+        self.btn_clasificar = QPushButton(" Evaluar Clasificación")
+        self.btn_clasificar.setIcon(icono_blanco("fa5s.chart-line"))
+        self.btn_clasificar.setFixedHeight(45)
+        self.btn_clasificar.setEnabled(False)
+        self.btn_clasificar.clicked.connect(self._al_clasificar)
+        layout.addWidget(self.btn_clasificar)
+
+    def _al_clasificar(self):
+        self.senal_iniciar_clasificacion.emit(
+            self.selector_modelo.currentText(),
+            self.spin_epocas_clf.value(),
+            0.001
+        )

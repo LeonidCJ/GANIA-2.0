@@ -1,64 +1,228 @@
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
+# utils/cargador_datos.py
 import os
-from torch.utils.data import DataLoader, Subset
+import shutil
+import zipfile
+import urllib.request
+import torch
+from torch.utils.data import DataLoader, Subset, random_split, Dataset
+from torchvision import datasets, transforms
+from PIL import Image
 
-def crear_cargador_datos(ruta_dataset, tamano_lote=32, tamano_imagen=64):
+from utils.adaptadores_dataset import GestorPreparacionDataset, validar_imagen
+
+EXTENSIONES_VALIDAS = ('.png', '.jpg', '.jpeg', '.webp')
+
+def validar_imagen_valida(ruta_archivo):
+    """Valida la extensión y la integridad del archivo de imagen."""
+    return validar_imagen(ruta_archivo)
+
+def resolver_subcarpeta_raiz(ruta_dir):
+    """Si la carpeta contiene una sola subcarpeta contenedora raíz, la resuelve."""
+    if not os.path.exists(ruta_dir):
+        return ruta_dir
+    elementos = [e for e in os.listdir(ruta_dir) if not e.startswith('.')]
+    if len(elementos) == 1 and os.path.isdir(os.path.join(ruta_dir, elementos[0])):
+        return os.path.join(ruta_dir, elementos[0])
+    return ruta_dir
+
+def resolver_carpeta_train_o_base(ruta_dataset):
+    """
+    Detecta si existe la carpeta 'train/' dentro del dataset (e.g., Oxford Flowers 102).
+    Si existe, devuelve la ruta a 'train/'; de lo contrario, la ruta resuelta.
+    """
+    ruta_base = resolver_subcarpeta_raiz(ruta_dataset)
+    ruta_train = os.path.join(ruta_base, "train")
+    if os.path.exists(ruta_train) and os.path.isdir(ruta_train):
+        return ruta_train
+    return ruta_base
+
+def preparar_y_analizar_dataset(ruta_dataset):
+    """
+    Ejecuta el gestor de preparación de dataset (Caso A, B, C o D como Oxford Flowers 102),
+    retornando la ruta estandarizada lista y un resumen completo.
+    """
     if not os.path.exists(ruta_dataset):
-        raise FileNotFoundError(f"No se encontró la ruta: {ruta_dataset}")
-    transform = transforms.Compose([
-        transforms.Resize(tamano_imagen),
-        transforms.CenterCrop(tamano_imagen),
+        return ruta_dataset, {"formato": "Inexistente", "clases": {}, "train": {}, "invalidas": 0}
+
+    gestor = GestorPreparacionDataset(ruta_dataset)
+    ruta_preparada, resumen = gestor.analizar_y_preparar()
+    return ruta_preparada, resumen
+
+def obtener_clases_disponibles(ruta_dataset):
+    """
+    Detecta automáticamente las clases disponibles utilizando el gestor de preparación.
+
+    Returns:
+        dict: {"nombre_clase": cantidad_imagenes_validas, ...}
+    """
+    ruta_prep, resumen = preparar_y_analizar_dataset(ruta_dataset)
+
+    # Extraer conteo por clase (priorizando train, pero con fallback a total_por_clase)
+    clases_dict = resumen.get("train", {})
+    if not clases_dict or max(clases_dict.values(), default=0) <= 1:
+        clases_dict = resumen.get("total_por_clase", {})
+    if not clases_dict and "clases" in resumen:
+        clases_dict = resumen["clases"]
+
+    return clases_dict
+
+def extraer_zip_dataset(ruta_zip, ruta_destino="./datos/datasets/zip_extraido"):
+    """Descomprime un archivo ZIP en la ruta de destino."""
+    if not os.path.exists(ruta_zip):
+        raise FileNotFoundError(f"No se encontró el archivo ZIP en: {ruta_zip}")
+
+    if os.path.exists(ruta_destino):
+        shutil.rmtree(ruta_destino)
+
+    os.makedirs(ruta_destino, exist_ok=True)
+
+    with zipfile.ZipFile(ruta_zip, 'r') as zip_ref:
+        zip_ref.extractall(ruta_destino)
+
+    print(f"[Cargador] ZIP extraído exitosamente en: {ruta_destino}")
+    return resolver_subcarpeta_raiz(ruta_destino)
+
+def descargar_extraer_url(url, ruta_destino="./datos/datasets/url_extraido", callback_log=None):
+    """Descarga un archivo ZIP desde una URL y lo extrae."""
+    if os.path.exists(ruta_destino):
+        shutil.rmtree(ruta_destino)
+
+    os.makedirs(ruta_destino, exist_ok=True)
+    tmp_zip = os.path.join(ruta_destino, "temp_download.zip")
+
+    if callback_log:
+        callback_log(f"Iniciando descarga desde URL: {url}...")
+
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req) as response, open(tmp_zip, 'wb') as out_file:
+        shutil.copyfileobj(response, out_file)
+
+    if callback_log:
+        callback_log("Descarga completada. Extrayendo archivos ZIP...")
+
+    with zipfile.ZipFile(tmp_zip, 'r') as zip_ref:
+        zip_ref.extractall(ruta_destino)
+
+    os.remove(tmp_zip)
+
+    if callback_log:
+        callback_log(f"Dataset descargado y extraído en: {ruta_destino}")
+
+    return resolver_subcarpeta_raiz(ruta_destino)
+
+def obtener_transformaciones(tamano_imagen=64, normalizar_dcgan=True):
+    norm_mean = (0.5, 0.5, 0.5) if normalizar_dcgan else (0.485, 0.456, 0.406)
+    norm_std = (0.5, 0.5, 0.5) if normalizar_dcgan else (0.229, 0.224, 0.225)
+
+    return transforms.Compose([
+        transforms.Resize((tamano_imagen, tamano_imagen)),
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-        
-    ])
-    dataset = datasets.ImageFolder(ruta_dataset, transform=transform)
-    return DataLoader(dataset, batch_size=tamano_lote, shuffle=True)
-
-def crear_cargador_datos_cifar10(limite_imagenes=1000, batch_size=64):
-    transform = transforms.Compose([
-        transforms.Resize(64),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # RGB (3 canales)
+        transforms.Normalize(norm_mean, norm_std)
     ])
 
-    dataset = datasets.CIFAR10(root='./datasets', train=True, download=True, transform=transform)
+class DatasetClaseEspecifica(Dataset):
+    """Dataset que carga EXCLUSIVAMENTE imágenes de una sola clase especificada."""
+    def __init__(self, folder, transform=None):
+        self.folder = folder
+        self.transform = transform
+        self.imgs = []
 
-    # Limitar la cantidad de imágenes
-    if limite_imagenes and limite_imagenes < len(dataset):
-        dataset = Subset(dataset, list(range(limite_imagenes)))
+        if os.path.exists(folder):
+            for file in os.listdir(folder):
+                ruta_completa = os.path.join(folder, file)
+                if os.path.isfile(ruta_completa) and validar_imagen_valida(ruta_completa):
+                    self.imgs.append(ruta_completa)
 
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    def __len__(self):
+        return len(self.imgs)
 
-def crear_cargador_datos_diseno(tipo_dataset, batch_size=32, tamano_imagen=64):
-    """Cargador especializado para el estudio de Diseño Humano"""
-    from config import CONFIG
-    base_path = CONFIG["RUTAS"]["DATASETS"]
-    ruta = os.path.join(base_path, tipo_dataset.lower())
+    def __getitem__(self, idx):
+        img_path = self.imgs[idx]
+        img = Image.open(img_path).convert('RGB')
+        if self.transform:
+            img = self.transform(img)
+        return img, 0
 
-    if not os.path.exists(ruta):
-        # Crear carpeta vacía para evitar errores si no existe el dataset físico aún
-        os.makedirs(ruta, exist_ok=True)
-        print(f"Aviso: Ruta {ruta} no existía. Se ha creado una carpeta vacía.")
+def crear_cargador_dcgan_clase(ruta_dataset, clase_seleccionada=None, batch_size=32, tamano_imagen=64, limite_imagenes=None):
+    """
+    Crea un DataLoader optimizado para entrenar DCGAN con imágenes de UNA sola clase.
+    """
+    transform = obtener_transformaciones(tamano_imagen, normalizar_dcgan=True)
 
-    transform = transforms.Compose([
-        transforms.Resize(tamano_imagen),
-        transforms.CenterCrop(tamano_imagen),
-        transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-    ])
+    if not os.path.exists(ruta_dataset):
+        print(f"[Cargador] Ruta {ruta_dataset} no encontrada. Usando datos fallback.")
+        return crear_dataloader_fallback(batch_size, tamano_imagen)
 
     try:
-        dataset = datasets.ImageFolder(ruta, transform=transform)
-        return DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    except:
-        # Fallback a un dataset aleatorio si la carpeta está vacía
-        import torch
-        class DummyDataset(torch.utils.data.Dataset):
-            def __init__(self, size=(3, 64, 64), length=100):
-                self.size = size
-                self.length = length
-            def __len__(self): return self.length
-            def __getitem__(self, idx): return torch.randn(self.size), 0
-        return DataLoader(DummyDataset(), batch_size=batch_size, shuffle=True)
+        ruta_base = resolver_carpeta_train_o_base(ruta_dataset)
+
+        # Determinar el directorio exacto de la clase
+        if clase_seleccionada and clase_seleccionada != "clase_unica":
+            dir_clase = os.path.join(ruta_base, clase_seleccionada)
+            if not os.path.exists(dir_clase):
+                dir_clase = os.path.join(resolver_subcarpeta_raiz(ruta_dataset), clase_seleccionada)
+        else:
+            dir_clase = ruta_base
+
+        dataset = DatasetClaseEspecifica(dir_clase, transform=transform)
+
+        if len(dataset) == 0:
+            print(f"[Cargador] No se encontraron imágenes válidas en {dir_clase}. Usando fallback.")
+            return crear_dataloader_fallback(batch_size, tamano_imagen)
+
+        if limite_imagenes and len(dataset) > limite_imagenes:
+            dataset = Subset(dataset, list(range(limite_imagenes)))
+
+        return DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
+
+    except Exception as e:
+        print(f"[Cargador] Error cargando clase '{clase_seleccionada}' ({e}). Usando fallback.")
+        return crear_dataloader_fallback(batch_size, tamano_imagen)
+
+def crear_cargador_dcgan(ruta_dataset, batch_size=32, tamano_imagen=64, limite_imagenes=None):
+    return crear_cargador_dcgan_clase(ruta_dataset, None, batch_size, tamano_imagen, limite_imagenes)
+
+def crear_cargadores_clasificacion(ruta_dataset, batch_size=32, tamano_imagen=64, pct_test=0.2):
+    transform = obtener_transformaciones(tamano_imagen, normalizar_dcgan=False)
+
+    if not os.path.exists(ruta_dataset):
+        return crear_dataloader_fallback(batch_size, tamano_imagen), crear_dataloader_fallback(batch_size, tamano_imagen), 2
+
+    try:
+        ruta_resuelta = resolver_carpeta_train_o_base(ruta_dataset)
+        subcarpetas = [d for d in os.listdir(ruta_resuelta)
+                       if os.path.isdir(os.path.join(ruta_resuelta, d)) and not d.startswith('.')]
+
+        if len(subcarpetas) > 0:
+            dataset = datasets.ImageFolder(ruta_resuelta, transform=transform)
+        else:
+            dataset = DatasetClaseEspecifica(ruta_resuelta, transform=transform)
+
+        n_total = len(dataset)
+        if n_total < 2:
+            fb = crear_dataloader_fallback(batch_size, tamano_imagen)
+            return fb, fb, 2
+
+        n_test = max(1, int(n_total * pct_test))
+        n_train = n_total - n_test
+
+        train_ds, test_ds = random_split(dataset, [n_train, n_test], generator=torch.Generator().manual_seed(42))
+
+        loader_train = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+        loader_test = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
+
+        return loader_train, loader_test, len(subcarpetas) if len(subcarpetas) > 0 else 2
+    except Exception as e:
+        print(f"[Cargador] Error en cargador de clasificación: {e}")
+        fb = crear_dataloader_fallback(batch_size, tamano_imagen)
+        return fb, fb, 2
+
+def crear_dataloader_fallback(batch_size, size=64):
+    class DummyDataset(Dataset):
+        def __init__(self):
+            self.data = torch.randn(100, 3, size, size)
+            self.labels = torch.randint(0, 2, (100,))
+        def __len__(self): return 100
+        def __getitem__(self, idx): return self.data[idx], self.labels[idx]
+
+    return DataLoader(DummyDataset(), batch_size=batch_size, shuffle=True)

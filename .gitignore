@@ -17,12 +17,12 @@ resultados/
 resultados_guardados/
 ejemplos/
 
+# Archivos zip
+*.zip
+
 # IDE y herramientas
 .idea/
 .vscode/
 .artifacts/
 .pytest_cache/
 temp_restore*/
-gania_codigo*.zip
-Gania 2.0 fuente.zip
-

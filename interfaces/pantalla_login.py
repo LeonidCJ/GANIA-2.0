@@ -49,7 +49,7 @@ class PantallaLogin(QWidget):
         card_layout.addWidget(lbl_desc)
 
         # Campo ID
-        card_layout.addWidget(QLabel("ID del Participante:"))
+        card_layout.addWidget(QLabel("Nombre o Apodo:"))
         self.input_id = QLineEdit()
         self.input_id.setPlaceholderText("Ej: P001 o Tu Nombre")
         self.input_id.setFixedHeight(45)
