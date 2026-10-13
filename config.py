@@ -1,14 +1,13 @@
-# Configuración centralizada del proyecto GANIA 2.0
+# Configuración centralizada del proyecto GANIA 2.0 (FastGAN & Aumento Multiclase)
 
 CONFIG = {
-    "DCGAN": {
+    "FASTGAN": {
         "BATCH_SIZE": 32,
         "TAMANO_IMAGEN": 64,
         "LEARNING_RATE": 0.0002,
         "MAX_EPOCAS": 50,
         "DIM_LATENTE": 100,
         "INTERVALO_CHECKPOINT": 5,
-        "LABEL_SMOOTHING": 0.9
     },
     "AUMENTO": {
         "CANTIDAD_SINTETICAS": 500,  # Cantidad de imágenes sintéticas a generar por clase
@@ -30,7 +29,7 @@ CONFIG = {
         "SINTETICAS_BASE": "./datos/datasets/synthetic",
         "AMPLIADO_BASE": "./datos/datasets/augmented",
         "RESULTADOS": "./datos/resultados",
-        "CHECKPOINTS_DCGAN": "./datos/resultados/checkpoints_dcgan",
+        "CHECKPOINTS_FASTGAN": "./datos/resultados/checkpoints_fastgan",
         "CHECKPOINTS_CLASIFICADOR": "./datos/resultados/checkpoints_clasificador",
         "LOGS": "./datos/resultados/log_resultados.txt"
     }

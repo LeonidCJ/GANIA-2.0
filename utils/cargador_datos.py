@@ -27,7 +27,7 @@ def resolver_subcarpeta_raiz(ruta_dir):
 
 def resolver_carpeta_train_o_base(ruta_dataset):
     """
-    Detecta si existe la carpeta 'train/' dentro del dataset (e.g., Oxford Flowers 102).
+    Detecta si existe la carpeta 'train/' dentro del dataset (e.g., Oxford Flowers 102/17).
     Si existe, devuelve la ruta a 'train/'; de lo contrario, la ruta resuelta.
     """
     ruta_base = resolver_subcarpeta_raiz(ruta_dataset)
@@ -38,7 +38,7 @@ def resolver_carpeta_train_o_base(ruta_dataset):
 
 def preparar_y_analizar_dataset(ruta_dataset):
     """
-    Ejecuta el gestor de preparación de dataset (Caso A, B, C o D como Oxford Flowers 102),
+    Ejecuta el gestor de preparación de dataset (Caso A, B, C o D),
     retornando la ruta estandarizada lista y un resumen completo.
     """
     if not os.path.exists(ruta_dataset):
@@ -66,59 +66,88 @@ def obtener_clases_disponibles(ruta_dataset):
 
     return clases_dict
 
-def extraer_zip_dataset(ruta_zip, ruta_destino="./datos/datasets/zip_extraido"):
-    """Descomprime un archivo ZIP en la ruta de destino."""
-    if not os.path.exists(ruta_zip):
-        raise FileNotFoundError(f"No se encontró el archivo ZIP en: {ruta_zip}")
+def extraer_archivo_comprimido(ruta_archivo, ruta_destino="./datos/datasets/zip_extraido"):
+    """
+    Descomprime un archivo comprimido (.zip, .tgz, .tar.gz, .tar) en la ruta de destino.
+    """
+    if not os.path.exists(ruta_archivo):
+        raise FileNotFoundError(f"No se encontró el archivo comprimido en: {ruta_archivo}")
 
     if os.path.exists(ruta_destino):
         shutil.rmtree(ruta_destino)
 
     os.makedirs(ruta_destino, exist_ok=True)
 
-    with zipfile.ZipFile(ruta_zip, 'r') as zip_ref:
-        zip_ref.extractall(ruta_destino)
+    ruta_lower = ruta_archivo.lower()
+    if ruta_lower.endswith(('.tgz', '.tar.gz', '.tar')):
+        import tarfile
+        with tarfile.open(ruta_archivo, 'r:*') as tar_ref:
+            tar_ref.extractall(path=ruta_destino)
+        print(f"[Cargador] Archivo TAR/TGZ extraído en: {ruta_destino}")
+    else:
+        with zipfile.ZipFile(ruta_archivo, 'r') as zip_ref:
+            zip_ref.extractall(ruta_destino)
+        print(f"[Cargador] Archivo ZIP extraído en: {ruta_destino}")
 
-    print(f"[Cargador] ZIP extraído exitosamente en: {ruta_destino}")
     return resolver_subcarpeta_raiz(ruta_destino)
 
+def extraer_zip_dataset(ruta_zip, ruta_destino="./datos/datasets/zip_extraido"):
+    return extraer_archivo_comprimido(ruta_zip, ruta_destino)
+
 def descargar_extraer_url(url, ruta_destino="./datos/datasets/url_extraido", callback_log=None):
-    """Descarga un archivo ZIP desde una URL y lo extrae."""
+    """
+    Descarga un archivo comprimido (.zip, .tgz, .tar.gz) desde una URL y lo extrae.
+    """
     if os.path.exists(ruta_destino):
         shutil.rmtree(ruta_destino)
 
     os.makedirs(ruta_destino, exist_ok=True)
-    tmp_zip = os.path.join(ruta_destino, "temp_download.zip")
+
+    url_lower = url.lower()
+    ext = ".tgz" if url_lower.endswith(('.tgz', '.tar.gz')) else ".zip"
+    tmp_file = os.path.join(ruta_destino, f"temp_download{ext}")
 
     if callback_log:
         callback_log(f"Iniciando descarga desde URL: {url}...")
 
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    with urllib.request.urlopen(req) as response, open(tmp_zip, 'wb') as out_file:
+    with urllib.request.urlopen(req) as response, open(tmp_file, 'wb') as out_file:
         shutil.copyfileobj(response, out_file)
 
     if callback_log:
-        callback_log("Descarga completada. Extrayendo archivos ZIP...")
+        callback_log("Descarga completada. Extrayendo archivos comprimidos...")
 
-    with zipfile.ZipFile(tmp_zip, 'r') as zip_ref:
-        zip_ref.extractall(ruta_destino)
+    extraer_archivo_comprimido(tmp_file, ruta_destino)
 
-    os.remove(tmp_zip)
+    if os.path.exists(tmp_file):
+        os.remove(tmp_file)
 
     if callback_log:
         callback_log(f"Dataset descargado y extraído en: {ruta_destino}")
 
     return resolver_subcarpeta_raiz(ruta_destino)
 
-def obtener_transformaciones(tamano_imagen=64, normalizar_dcgan=True):
-    norm_mean = (0.5, 0.5, 0.5) if normalizar_dcgan else (0.485, 0.456, 0.406)
-    norm_std = (0.5, 0.5, 0.5) if normalizar_dcgan else (0.229, 0.224, 0.225)
+def obtener_transformaciones(tamano_imagen=64, normalizar_fastgan=True, para_entrenamiento=False):
+    norm_mean = (0.5, 0.5, 0.5) if normalizar_fastgan else (0.485, 0.456, 0.406)
+    norm_std = (0.5, 0.5, 0.5) if normalizar_fastgan else (0.229, 0.224, 0.225)
 
-    return transforms.Compose([
-        transforms.Resize((tamano_imagen, tamano_imagen)),
+    lista_tf = [
+        transforms.Resize((tamano_imagen, tamano_imagen))
+    ]
+
+    if para_entrenamiento and normalizar_fastgan:
+        lista_tf.extend([
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomRotation(degrees=10),
+            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1)
+        ])
+
+    lista_tf.extend([
         transforms.ToTensor(),
         transforms.Normalize(norm_mean, norm_std)
     ])
+
+    return transforms.Compose(lista_tf)
 
 class DatasetClaseEspecifica(Dataset):
     """Dataset que carga EXCLUSIVAMENTE imágenes de una sola clase especificada."""
@@ -143,11 +172,11 @@ class DatasetClaseEspecifica(Dataset):
             img = self.transform(img)
         return img, 0
 
-def crear_cargador_dcgan_clase(ruta_dataset, clase_seleccionada=None, batch_size=32, tamano_imagen=64, limite_imagenes=None):
+def crear_cargador_fastgan_clase(ruta_dataset, clase_seleccionada=None, batch_size=32, tamano_imagen=64, limite_imagenes=None):
     """
-    Crea un DataLoader optimizado para entrenar DCGAN con imágenes de UNA sola clase.
+    Crea un DataLoader optimizado para entrenar FastGAN con imágenes de UNA sola clase.
     """
-    transform = obtener_transformaciones(tamano_imagen, normalizar_dcgan=True)
+    transform = obtener_transformaciones(tamano_imagen, normalizar_fastgan=True, para_entrenamiento=True)
 
     if not os.path.exists(ruta_dataset):
         print(f"[Cargador] Ruta {ruta_dataset} no encontrada. Usando datos fallback.")
@@ -156,7 +185,6 @@ def crear_cargador_dcgan_clase(ruta_dataset, clase_seleccionada=None, batch_size
     try:
         ruta_base = resolver_carpeta_train_o_base(ruta_dataset)
 
-        # Determinar el directorio exacto de la clase
         if clase_seleccionada and clase_seleccionada != "clase_unica":
             dir_clase = os.path.join(ruta_base, clase_seleccionada)
             if not os.path.exists(dir_clase):
@@ -179,11 +207,15 @@ def crear_cargador_dcgan_clase(ruta_dataset, clase_seleccionada=None, batch_size
         print(f"[Cargador] Error cargando clase '{clase_seleccionada}' ({e}). Usando fallback.")
         return crear_dataloader_fallback(batch_size, tamano_imagen)
 
-def crear_cargador_dcgan(ruta_dataset, batch_size=32, tamano_imagen=64, limite_imagenes=None):
-    return crear_cargador_dcgan_clase(ruta_dataset, None, batch_size, tamano_imagen, limite_imagenes)
+def crear_cargador_fastgan(ruta_dataset, batch_size=32, tamano_imagen=64, limite_imagenes=None):
+    return crear_cargador_fastgan_clase(ruta_dataset, None, batch_size, tamano_imagen, limite_imagenes)
+
+# Aliases para retrocompatibilidad interna
+crear_cargador_dcgan_clase = crear_cargador_fastgan_clase
+crear_cargador_dcgan = crear_cargador_fastgan
 
 def crear_cargadores_clasificacion(ruta_dataset, batch_size=32, tamano_imagen=64, pct_test=0.2):
-    transform = obtener_transformaciones(tamano_imagen, normalizar_dcgan=False)
+    transform = obtener_transformaciones(tamano_imagen, normalizar_fastgan=False)
 
     if not os.path.exists(ruta_dataset):
         return crear_dataloader_fallback(batch_size, tamano_imagen), crear_dataloader_fallback(batch_size, tamano_imagen), 2

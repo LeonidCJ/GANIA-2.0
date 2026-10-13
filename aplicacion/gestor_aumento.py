@@ -8,7 +8,7 @@ from utils.cargador_datos import resolver_carpeta_train_o_base, validar_imagen_v
 
 class GestorAumentoDataset:
     """
-    Servicio de gestión y combinación de datasets multiclase (Original + Sintético).
+    Servicio de gestión y combinación de datasets multiclase (Original + Sintético FastGAN).
     """
     def __init__(self, ruta_original="./datos/datasets/original",
                  ruta_sinteticas="./datos/datasets/synthetic",
@@ -39,23 +39,22 @@ class GestorAumentoDataset:
         print(f"[Aumento] Copiadas {copiadas} imágenes originales preservando la jerarquía por clase.")
         return copiadas
 
-    def integrar_imagenes_sinteticas_clase(self, entrenador_dcgan, cantidad, clase_nombre="clase_01", callback_progreso=None):
+    def integrar_imagenes_sinteticas_clase(self, entrenador_fastgan, cantidad, clase_nombre="clase_01", callback_progreso=None):
         """
-        Genera N imágenes sintéticas para una clase específica y las integra en:
+        Genera N imágenes sintéticas con FastGAN para una clase específica y las integra en:
         1. synthetic/clase_nombre/synthetic_001.png
         2. augmented/clase_nombre/synthetic_001.png
         """
-        # Guardar en folder synthetic/clase_nombre
         dir_sinteticas = self.ruta_sinteticas / clase_nombre
         dir_ampliado = self.ruta_ampliado / clase_nombre
 
         dir_sinteticas.mkdir(parents=True, exist_ok=True)
         dir_ampliado.mkdir(parents=True, exist_ok=True)
 
-        print(f"[Aumento] Generando {cantidad} imágenes sintéticas para la clase '{clase_nombre}'...")
+        print(f"[Aumento] Generando {cantidad} imágenes sintéticas FastGAN para la clase '{clase_nombre}'...")
 
         # Generar en folder sintéticas
-        rutas_sinteticas = entrenador_dcgan.generar_lote_sintetico(
+        rutas_sinteticas = entrenador_fastgan.generar_lote_sintetico(
             cantidad=cantidad,
             ruta_destino=str(self.ruta_sinteticas),
             clase_nombre=clase_nombre,

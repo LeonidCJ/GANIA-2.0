@@ -47,10 +47,10 @@ class PanelVisualizacion(QGroupBox):
         self.imagen_actual = imagen_np
 
 
-class PanelEstadisticasDCGAN(QGroupBox):
-    """Visualizador de Curvas de Pérdida de DCGAN y Métricas GAN (FID / Diversidad)."""
+class PanelEstadisticasFastGAN(QGroupBox):
+    """Visualizador de Curvas de Pérdida de FastGAN y Métricas GAN (FID / Diversidad)."""
     def __init__(self):
-        super().__init__("Pérdidas y Métricas DCGAN")
+        super().__init__("Pérdidas y Métricas FastGAN")
         layout = QVBoxLayout(self)
 
         self.figura = Figure(figsize=(8.5, 3.0), facecolor='none')
@@ -153,6 +153,10 @@ class PanelEstadisticasDCGAN(QGroupBox):
         self.canvas.draw()
 
 
+# Alias de retrocompatibilidad
+PanelEstadisticasDCGAN = PanelEstadisticasFastGAN
+
+
 class PanelEvaluacionClasificacion(QGroupBox):
     """Panel de Comparación Experimental: Clasificador en Dataset Original vs. Dataset Ampliado."""
     def __init__(self):
@@ -162,7 +166,7 @@ class PanelEvaluacionClasificacion(QGroupBox):
         # Tabla Comparativa de Métricas
         self.tabla = QTableWidget(2, 4)
         self.tabla.setHorizontalHeaderLabels(["Accuracy", "Precision", "Recall", "F1-Score"])
-        self.tabla.setVerticalHeaderLabels(["Dataset Original", "Dataset Ampliado (DCGAN)"])
+        self.tabla.setVerticalHeaderLabels(["Dataset Original", "Dataset Ampliado (FastGAN)"])
         self.tabla.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tabla.verticalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tabla.setFixedHeight(110)

@@ -1,7 +1,7 @@
 # aplicacion/sistema_gania.py
 """
 Controlador de ejecución asíncrona (Workers en PyQT) para:
-1. Entrenamiento de DCGAN por Clase
+1. Entrenamiento de FastGAN por Clase
 2. Generación Masiva por Clase y Dataset Ampliado
 3. Clasificación y Evaluación Comparativa
 """
@@ -11,23 +11,23 @@ import numpy as np
 import torchvision.utils as vutils
 from PyQt5.QtCore import QObject, pyqtSignal, QThread
 
-from modelos.dcgan import EntrenadorDCGAN
+from modelos.fastgan import EntrenadorFastGAN
 from modelos.clasificador import EntrenadorClasificador
 from aplicacion.gestor_aumento import GestorAumentoDataset
-from utils.cargador_datos import crear_cargador_dcgan_clase, crear_cargadores_clasificacion
+from utils.cargador_datos import crear_cargador_fastgan_clase, crear_cargadores_clasificacion
 from utils.tensor_utils import tensor_to_numpy
 
 
-class WorkerDCGAN(QThread):
-    """Worker asíncrono para el entrenamiento de la red DCGAN en una clase específica."""
+class WorkerFastGAN(QThread):
+    """Worker asíncrono para el entrenamiento de la red FastGAN en una clase específica."""
     finalizado_epoca = pyqtSignal(int, float, float, object)
     entrenamiento_completado = pyqtSignal(str)
     senal_log = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, modelo_dcgan, ruta_dataset, clase_seleccionada=None, batch_size=32, lr=0.0002, max_epocas=50):
+    def __init__(self, modelo_fastgan, ruta_dataset, clase_seleccionada=None, batch_size=32, lr=0.0002, max_epocas=50):
         super().__init__()
-        self.modelo = modelo_dcgan
+        self.modelo = modelo_fastgan
         self.ruta_dataset = ruta_dataset
         self.clase_seleccionada = clase_seleccionada
         self.batch_size = batch_size
@@ -37,8 +37,8 @@ class WorkerDCGAN(QThread):
 
     def run(self):
         try:
-            self.senal_log.emit(f"[Worker DCGAN] Cargando clase '{self.clase_seleccionada or 'Todas'}'...")
-            cargador = crear_cargador_dcgan_clase(
+            self.senal_log.emit(f"[Worker FastGAN] Cargando clase '{self.clase_seleccionada or 'Todas'}'...")
+            cargador = crear_cargador_fastgan_clase(
                 self.ruta_dataset,
                 clase_seleccionada=self.clase_seleccionada,
                 batch_size=self.batch_size
@@ -46,10 +46,10 @@ class WorkerDCGAN(QThread):
 
             for epoca in range(self.max_epocas):
                 if self._abortar:
-                    self.senal_log.emit("[Worker DCGAN] Entrenamiento cancelado por el usuario.")
+                    self.senal_log.emit("[Worker FastGAN] Entrenamiento cancelado por el usuario.")
                     return
 
-                self.senal_log.emit(f"[Worker DCGAN] Procesando Época {epoca + 1}/{self.max_epocas} (Clase: {self.clase_seleccionada or 'Base'})...")
+                self.senal_log.emit(f"[Worker FastGAN] Procesando Época {epoca + 1}/{self.max_epocas} (Clase: {self.clase_seleccionada or 'Base'})...")
                 def check_abort(): return self._abortar
 
                 loss_G, loss_D = self.modelo.entrenar_epoca(cargador, epoca, self.max_epocas, abort_callback=check_abort)
@@ -63,6 +63,9 @@ class WorkerDCGAN(QThread):
                     grid_tensor = vutils.make_grid(sample_tensors, nrow=3, normalize=True, value_range=(-1, 1), padding=2)
                     img_muestra = tensor_to_numpy(grid_tensor)
 
+                    # Imágenes sintéticas individuales para el cálculo correcto del FID
+                    falsas_individuales = [tensor_to_numpy(sample_tensors[k]) for k in range(min(9, len(sample_tensors)))]
+
                 # Muestras reales para FID
                 reales_muestras = None
                 if epoca == 0:
@@ -71,21 +74,28 @@ class WorkerDCGAN(QThread):
                         reales_muestras = [tensor_to_numpy(t) for t in batch_reales[:16]]
                     except: pass
 
-                self.finalizado_epoca.emit(epoca + 1, loss_G, loss_D, {"img": img_muestra, "reales": reales_muestras})
+                self.finalizado_epoca.emit(epoca + 1, loss_G, loss_D, {
+                    "img": img_muestra,
+                    "reales": reales_muestras,
+                    "falsas_ind": falsas_individuales
+                })
 
                 # Guardar checkpoint
                 if (epoca + 1) % 5 == 0 or (epoca + 1) == self.max_epocas:
                     self.modelo.guardar_checkpoint(epoca + 1)
 
-            self.entrenamiento_completado.emit(f"Entrenamiento DCGAN completado para clase '{self.clase_seleccionada or 'Base'}'.")
+            self.entrenamiento_completado.emit(f"Entrenamiento FastGAN completado para clase '{self.clase_seleccionada or 'Base'}'.")
 
         except Exception as e:
             import traceback
             traceback.print_exc()
-            self.error.emit(f"Error en DCGAN: {str(e)}")
+            self.error.emit(f"Error en FastGAN: {str(e)}")
 
     def abortar(self):
         self._abortar = True
+
+
+WorkerDCGAN = WorkerFastGAN  # Alias para compatibilidad
 
 
 class WorkerGeneracionMasiva(QThread):
@@ -95,9 +105,9 @@ class WorkerGeneracionMasiva(QThread):
     senal_log = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, entrenador_dcgan, ruta_original, clase_seleccionada="clase_01", cantidad_sinteticas=500):
+    def __init__(self, entrenador_fastgan, ruta_original, clase_seleccionada="clase_01", cantidad_sinteticas=500):
         super().__init__()
-        self.dcgan = entrenador_dcgan
+        self.fastgan = entrenador_fastgan
         self.ruta_original = ruta_original
         self.clase_seleccionada = clase_seleccionada
         self.cantidad_sinteticas = cantidad_sinteticas
@@ -116,7 +126,7 @@ class WorkerGeneracionMasiva(QThread):
                 self.progreso.emit(actual, total)
 
             sinteticas_creadas = gestor.integrar_imagenes_sinteticas_clase(
-                entrenador_dcgan=self.dcgan,
+                entrenador_fastgan=self.fastgan,
                 cantidad=self.cantidad_sinteticas,
                 clase_nombre=self.clase_seleccionada,
                 callback_progreso=cb_prog
@@ -124,7 +134,7 @@ class WorkerGeneracionMasiva(QThread):
 
             # Rejilla para vista previa de generadas en UI
             with torch.no_grad():
-                sample_tensors = self.dcgan.generador(torch.randn(9, self.dcgan.dim_latente, 1, 1, device=self.dcgan.dispositivo)).cpu()
+                sample_tensors = self.fastgan.generador(torch.randn(9, self.fastgan.dim_latente, 1, 1, device=self.fastgan.dispositivo)).cpu()
                 grid_tensor = vutils.make_grid(sample_tensors, nrow=3, normalize=True, value_range=(-1, 1), padding=2)
                 img_grid_sinteticas = tensor_to_numpy(grid_tensor)
 

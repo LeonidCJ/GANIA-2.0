@@ -72,8 +72,8 @@ class PanelConfiguracionDataset(QGroupBox):
         self.lbl_resumen_preparacion.setStyleSheet("font-size: 11px; color: #60A5FA; background: rgba(59, 130, 246, 0.1); padding: 8px; border-radius: 8px;")
         layout.addWidget(self.lbl_resumen_preparacion)
 
-        # 3. Selector de Clase para DCGAN
-        layout.addWidget(QLabel("Clases Detectadas (Selecciona una para DCGAN):"))
+        # 3. Selector de Clase para FastGAN
+        layout.addWidget(QLabel("Clases Detectadas (Selecciona una para FastGAN):"))
         self.selector_clase = QComboBox()
         self.selector_clase.setFixedHeight(35)
         layout.addWidget(self.selector_clase)
@@ -204,12 +204,16 @@ class PanelConfiguracionDataset(QGroupBox):
             parent = parent.parent()
 
 
-class PanelControlDCGAN(QGroupBox):
-    senal_iniciar_dcgan = pyqtSignal()
-    senal_detener_dcgan = pyqtSignal()
+class PanelControlFastGAN(QGroupBox):
+    senal_iniciar_fastgan = pyqtSignal()
+    senal_detener_fastgan = pyqtSignal()
+
+    # Aliases de señales para retrocompatibilidad
+    senal_iniciar_dcgan = senal_iniciar_fastgan
+    senal_detener_dcgan = senal_detener_fastgan
 
     def __init__(self):
-        super().__init__("2. Entrenamiento DCGAN por Clase")
+        super().__init__("2. Entrenamiento FastGAN por Clase (ICLR 2021)")
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
@@ -246,20 +250,24 @@ class PanelControlDCGAN(QGroupBox):
 
         # Botones
         btn_layout = QHBoxLayout()
-        self.btn_iniciar = QPushButton(" Entrenar DCGAN")
+        self.btn_iniciar = QPushButton(" Entrenar FastGAN")
         self.btn_iniciar.setIcon(icono_blanco("fa5s.play"))
         self.btn_iniciar.setFixedHeight(40)
-        self.btn_iniciar.clicked.connect(lambda: self.senal_iniciar_dcgan.emit())
+        self.btn_iniciar.clicked.connect(lambda: self.senal_iniciar_fastgan.emit())
 
         self.btn_detener = QPushButton(" Detener")
         self.btn_detener.setIcon(icono_blanco("fa5s.stop"))
         self.btn_detener.setFixedHeight(40)
         self.btn_detener.setEnabled(False)
-        self.btn_detener.clicked.connect(lambda: self.senal_detener_dcgan.emit())
+        self.btn_detener.clicked.connect(lambda: self.senal_detener_fastgan.emit())
 
         btn_layout.addWidget(self.btn_iniciar)
         btn_layout.addWidget(self.btn_detener)
         layout.addLayout(btn_layout)
+
+
+# Alias para retrocompatibilidad
+PanelControlDCGAN = PanelControlFastGAN
 
 
 class PanelAumentoDataset(QGroupBox):
@@ -276,7 +284,7 @@ class PanelAumentoDataset(QGroupBox):
         self.ruta_ampliado = "./datos/datasets/augmented"
 
         # Estado del Modelo Entrenado
-        self.lbl_estado_modelo = QLabel("Modelo DCGAN: No entrenado")
+        self.lbl_estado_modelo = QLabel("Modelo FastGAN: No entrenado")
         self.lbl_estado_modelo.setStyleSheet("font-weight: bold; color: #EF4444; font-size: 12px;")
         layout.addWidget(self.lbl_estado_modelo)
 
@@ -330,11 +338,11 @@ class PanelAumentoDataset(QGroupBox):
 
     def set_estado_modelo_listo(self, listo=True):
         if listo:
-            self.lbl_estado_modelo.setText("Modelo DCGAN: Entrenado y listo ✓")
+            self.lbl_estado_modelo.setText("Modelo FastGAN: Entrenado y listo ✓")
             self.lbl_estado_modelo.setStyleSheet("font-weight: bold; color: #10B981; font-size: 12px;")
             self.btn_generar_aumento.setEnabled(True)
         else:
-            self.lbl_estado_modelo.setText("Modelo DCGAN: No entrenado")
+            self.lbl_estado_modelo.setText("Modelo FastGAN: No entrenado")
             self.lbl_estado_modelo.setStyleSheet("font-weight: bold; color: #EF4444; font-size: 12px;")
             self.btn_generar_aumento.setEnabled(False)
 
