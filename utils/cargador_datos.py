@@ -4,7 +4,7 @@ import shutil
 import zipfile
 import urllib.request
 import torch
-from torch.utils.data import DataLoader, Subset, random_split, Dataset
+from torch.utils.data import DataLoader, Subset, random_split, Dataset, RandomSampler
 from torchvision import datasets, transforms
 from PIL import Image
 
@@ -131,16 +131,23 @@ def obtener_transformaciones(tamano_imagen=64, normalizar_fastgan=True, para_ent
     norm_mean = (0.5, 0.5, 0.5) if normalizar_fastgan else (0.485, 0.456, 0.406)
     norm_std = (0.5, 0.5, 0.5) if normalizar_fastgan else (0.229, 0.224, 0.225)
 
-    lista_tf = [
-        transforms.Resize((tamano_imagen, tamano_imagen))
-    ]
-
-    if para_entrenamiento and normalizar_fastgan:
-        lista_tf.extend([
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomRotation(degrees=10),
-            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1)
-        ])
+    if normalizar_fastgan:
+        # GAN: se preserva la proporción (Resize del lado corto + recorte) para no deformar
+        # las flores. Solo se usa flip horizontal: rotaciones (esquinas negras) o ColorJitter
+        # se "filtrarían" a las imágenes generadas. El resto de aumentos lo hace DiffAugment.
+        tamano_resize = int(round(tamano_imagen * 1.125))
+        lista_tf = [transforms.Resize(tamano_resize)]
+        if para_entrenamiento:
+            lista_tf.extend([
+                transforms.RandomCrop(tamano_imagen),
+                transforms.RandomHorizontalFlip(p=0.5),
+            ])
+        else:
+            lista_tf.append(transforms.CenterCrop(tamano_imagen))
+    else:
+        lista_tf = [
+            transforms.Resize((tamano_imagen, tamano_imagen))
+        ]
 
     lista_tf.extend([
         transforms.ToTensor(),
@@ -172,9 +179,24 @@ class DatasetClaseEspecifica(Dataset):
             img = self.transform(img)
         return img, 0
 
-def crear_cargador_fastgan_clase(ruta_dataset, clase_seleccionada=None, batch_size=32, tamano_imagen=64, limite_imagenes=None):
+def _resolver_dir_clase(ruta_dataset, clase_seleccionada=None):
+    """Resuelve la carpeta física de una clase dentro del dataset."""
+    ruta_base = resolver_carpeta_train_o_base(ruta_dataset)
+    if clase_seleccionada and clase_seleccionada != "clase_unica":
+        dir_clase = os.path.join(ruta_base, clase_seleccionada)
+        if not os.path.exists(dir_clase):
+            dir_clase = os.path.join(resolver_subcarpeta_raiz(ruta_dataset), clase_seleccionada)
+        return dir_clase
+    return ruta_base
+
+def crear_cargador_fastgan_clase(ruta_dataset, clase_seleccionada=None, batch_size=32, tamano_imagen=64,
+                                 limite_imagenes=None, iteraciones_por_epoca=None):
     """
     Crea un DataLoader optimizado para entrenar FastGAN con imágenes de UNA sola clase.
+
+    Si se indica `iteraciones_por_epoca`, cada época tendrá exactamente ese número de lotes
+    (muestreo aleatorio con reemplazo). Con datasets pequeños (p. ej. 80 imágenes) esto evita
+    que una "época" sean solo 2-3 iteraciones.
     """
     transform = obtener_transformaciones(tamano_imagen, normalizar_fastgan=True, para_entrenamiento=True)
 
@@ -183,15 +205,7 @@ def crear_cargador_fastgan_clase(ruta_dataset, clase_seleccionada=None, batch_si
         return crear_dataloader_fallback(batch_size, tamano_imagen)
 
     try:
-        ruta_base = resolver_carpeta_train_o_base(ruta_dataset)
-
-        if clase_seleccionada and clase_seleccionada != "clase_unica":
-            dir_clase = os.path.join(ruta_base, clase_seleccionada)
-            if not os.path.exists(dir_clase):
-                dir_clase = os.path.join(resolver_subcarpeta_raiz(ruta_dataset), clase_seleccionada)
-        else:
-            dir_clase = ruta_base
-
+        dir_clase = _resolver_dir_clase(ruta_dataset, clase_seleccionada)
         dataset = DatasetClaseEspecifica(dir_clase, transform=transform)
 
         if len(dataset) == 0:
@@ -201,11 +215,30 @@ def crear_cargador_fastgan_clase(ruta_dataset, clase_seleccionada=None, batch_si
         if limite_imagenes and len(dataset) > limite_imagenes:
             dataset = Subset(dataset, list(range(limite_imagenes)))
 
+        if iteraciones_por_epoca:
+            sampler = RandomSampler(dataset, replacement=True, num_samples=iteraciones_por_epoca * batch_size)
+            return DataLoader(dataset, batch_size=batch_size, sampler=sampler, drop_last=True)
+
         return DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
 
     except Exception as e:
         print(f"[Cargador] Error cargando clase '{clase_seleccionada}' ({e}). Usando fallback.")
         return crear_dataloader_fallback(batch_size, tamano_imagen)
+
+def cargar_imagenes_reales_clase(ruta_dataset, clase_seleccionada=None, tamano_imagen=64, maximo=500):
+    """
+    Carga TODAS las imágenes reales de la clase (sin aumentos aleatorios, recorte central)
+    como arrays uint8 (H, W, C). Se usan como referencia para FID/KID/Diversidad.
+    """
+    from utils.tensor_utils import tensor_to_numpy
+    transform = obtener_transformaciones(tamano_imagen, normalizar_fastgan=True, para_entrenamiento=False)
+    try:
+        dataset = DatasetClaseEspecifica(_resolver_dir_clase(ruta_dataset, clase_seleccionada), transform=transform)
+        n = min(len(dataset), maximo)
+        return [tensor_to_numpy(dataset[i][0]) for i in range(n)]
+    except Exception as e:
+        print(f"[Cargador] No se pudieron cargar imágenes reales para métricas: {e}")
+        return []
 
 def crear_cargador_fastgan(ruta_dataset, batch_size=32, tamano_imagen=64, limite_imagenes=None):
     return crear_cargador_fastgan_clase(ruta_dataset, None, batch_size, tamano_imagen, limite_imagenes)

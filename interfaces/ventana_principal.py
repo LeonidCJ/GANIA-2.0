@@ -294,6 +294,7 @@ class VentanaGAN(QMainWindow):
 
         self.panel_control_fastgan.btn_iniciar.setEnabled(False)
         self.panel_control_fastgan.btn_detener.setEnabled(True)
+        self.panel_control_fastgan.set_entrenando(True)
         self.panel_control_aumento.set_estado_modelo_listo(False)
         self.stats_fastgan.limpiar()
         self.log_eventos.clear()
@@ -304,8 +305,21 @@ class VentanaGAN(QMainWindow):
         batch = self.panel_control_fastgan.spin_batch.value()
         epocas = self.panel_control_fastgan.spin_epocas.value()
 
+        dispositivo = self.panel_control_fastgan.obtener_dispositivo()
+        if dispositivo.type == "cuda":
+            import torch
+            self.escribir_log(f"Dispositivo de entrenamiento: GPU NVIDIA ({torch.cuda.get_device_name(0)}) con CUDA.")
+        else:
+            self.escribir_log("Dispositivo de entrenamiento: CPU (el entrenamiento será más lento).")
+
         self.escribir_log(f"Iniciando entrenamiento FastGAN exclusivo para la clase '{clase_sel}'...")
-        self.fastgan = EntrenadorFastGAN(dispositivo=self.sistema.device, lr=lr)
+        from config import CONFIG
+        cfg_gan = CONFIG["FASTGAN"]
+        self.fastgan = EntrenadorFastGAN(
+            dispositivo=dispositivo, lr=lr,
+            politica_aug=cfg_gan.get("POLITICA_DIFFAUGMENT", "color,translation,cutout"),
+            ema_beta=cfg_gan.get("EMA_BETA", 0.999)
+        )
         self.dcgan = self.fastgan  # Alias para compatibilidad
 
         self.worker_fastgan = WorkerFastGAN(
@@ -319,32 +333,29 @@ class VentanaGAN(QMainWindow):
         self.worker_fastgan.finalizado_epoca.connect(self.on_fastgan_epoca_terminada)
         self.worker_fastgan.entrenamiento_completado.connect(self.on_fastgan_completado)
         self.worker_fastgan.senal_log.connect(self.escribir_log)
-        self.worker_fastgan.error.connect(lambda e: self.barra_estado.showMessage(f"Error: {e}"))
+        self.worker_fastgan.error.connect(self.on_fastgan_error)
         self.worker_fastgan.start()
+
+    def on_fastgan_error(self, e):
+        self.barra_estado.showMessage(f"Error: {e}")
+        self.escribir_log(f"Error: {e}")
+        self.panel_control_fastgan.btn_iniciar.setEnabled(True)
+        self.panel_control_fastgan.btn_detener.setEnabled(False)
+        self.panel_control_fastgan.set_entrenando(False)
 
     def on_fastgan_epoca_terminada(self, epoca, lg, ld, datos):
         img = datos.get('img') if isinstance(datos, dict) else datos
-        reales = datos.get('reales') if isinstance(datos, dict) else None
-        falsas_ind = datos.get('falsas_ind') if isinstance(datos, dict) else None
-
-        if reales:
-            self._buffer_imgs_reales = reales
-
-        if falsas_ind:
-            self._buffer_imgs_falsas.extend(falsas_ind)
+        metricas = datos.get('metricas') if isinstance(datos, dict) else None
 
         if img is not None:
             self.panel_vis_fastgan.mostrar_imagen(img)
 
-            fid_val = div_val = None
-            if epoca == 1 or epoca % 5 == 0:
-                try:
-                    from utils.metricas_ia import calcular_metricas_calidad
-                    m = calcular_metricas_calidad(self._buffer_imgs_reales, self._buffer_imgs_falsas[-32:], dispositivo=str(self.sistema.device))
-                    fid_val, div_val = m.get("fid"), m.get("diversidad")
-                except: pass
+        # Las métricas se calculan en el worker (cada N épocas) con suficientes muestras.
+        fid_val = kid_val = div_val = None
+        if metricas:
+            fid_val, kid_val, div_val = metricas.get("fid"), metricas.get("kid"), metricas.get("diversidad")
 
-            self.stats_fastgan.actualizar(epoca, lg, ld, fid=fid_val, diversidad=div_val)
+        self.stats_fastgan.actualizar(epoca, lg, ld, fid=fid_val, diversidad=div_val, kid=kid_val)
 
         self.panel_control_fastgan.barra_progreso.setValue(int((epoca / self.panel_control_fastgan.spin_epocas.value()) * 100))
 
@@ -352,6 +363,7 @@ class VentanaGAN(QMainWindow):
         self.escribir_log(msj)
         self.panel_control_fastgan.btn_iniciar.setEnabled(True)
         self.panel_control_fastgan.btn_detener.setEnabled(False)
+        self.panel_control_fastgan.set_entrenando(False)
         self.panel_control_aumento.set_estado_modelo_listo(True)
         clase_sel = self.panel_dataset.obtener_clase_seleccionada()
         QMessageBox.information(self, "FastGAN Entrenada", f"FastGAN entrenada y guardada exitosamente para la clase '{clase_sel}'.\n\nEl modelo está listo para generar imágenes sintéticas de alta fidelidad.")
@@ -361,6 +373,7 @@ class VentanaGAN(QMainWindow):
             self.worker_fastgan.abortar()
             self.panel_control_fastgan.btn_iniciar.setEnabled(True)
             self.panel_control_fastgan.btn_detener.setEnabled(False)
+            self.panel_control_fastgan.set_entrenando(False)
             self.escribir_log("Entrenamiento de FastGAN detenido por el usuario.")
 
     # =========================================================================

@@ -1,10 +1,80 @@
 import os
+import copy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
 import traceback
 from torchvision.utils import save_image
+
+
+# =============================================================================
+# DiffAugment (Zhao et al., NeurIPS 2020) - usado por FastGAN para few-shot.
+# Se aplica a imágenes REALES y FALSAS antes del discriminador, de forma
+# diferenciable, para que D no memorice el dataset y los aumentos no se
+# "filtren" a las imágenes generadas. Asume tensores en rango [-1, 1].
+# =============================================================================
+def _rand_brightness(x):
+    return x + (torch.rand(x.size(0), 1, 1, 1, dtype=x.dtype, device=x.device) - 0.5)
+
+
+def _rand_saturation(x):
+    x_mean = x.mean(dim=1, keepdim=True)
+    return (x - x_mean) * (torch.rand(x.size(0), 1, 1, 1, dtype=x.dtype, device=x.device) * 2) + x_mean
+
+
+def _rand_contrast(x):
+    x_mean = x.mean(dim=[1, 2, 3], keepdim=True)
+    return (x - x_mean) * (torch.rand(x.size(0), 1, 1, 1, dtype=x.dtype, device=x.device) + 0.5) + x_mean
+
+
+def _rand_translation(x, ratio=0.125):
+    shift_x, shift_y = int(x.size(2) * ratio + 0.5), int(x.size(3) * ratio + 0.5)
+    translation_x = torch.randint(-shift_x, shift_x + 1, size=[x.size(0), 1, 1], device=x.device)
+    translation_y = torch.randint(-shift_y, shift_y + 1, size=[x.size(0), 1, 1], device=x.device)
+    grid_batch, grid_x, grid_y = torch.meshgrid(
+        torch.arange(x.size(0), dtype=torch.long, device=x.device),
+        torch.arange(x.size(2), dtype=torch.long, device=x.device),
+        torch.arange(x.size(3), dtype=torch.long, device=x.device),
+        indexing='ij'
+    )
+    grid_x = torch.clamp(grid_x + translation_x + 1, 0, x.size(2) + 1)
+    grid_y = torch.clamp(grid_y + translation_y + 1, 0, x.size(3) + 1)
+    x_pad = F.pad(x, [1, 1, 1, 1, 0, 0, 0, 0])
+    return x_pad.permute(0, 2, 3, 1).contiguous()[grid_batch, grid_x, grid_y].permute(0, 3, 1, 2)
+
+
+def _rand_cutout(x, ratio=0.5):
+    cutout_size = int(x.size(2) * ratio + 0.5), int(x.size(3) * ratio + 0.5)
+    offset_x = torch.randint(0, x.size(2) + (1 - cutout_size[0] % 2), size=[x.size(0), 1, 1], device=x.device)
+    offset_y = torch.randint(0, x.size(3) + (1 - cutout_size[1] % 2), size=[x.size(0), 1, 1], device=x.device)
+    grid_batch, grid_x, grid_y = torch.meshgrid(
+        torch.arange(x.size(0), dtype=torch.long, device=x.device),
+        torch.arange(cutout_size[0], dtype=torch.long, device=x.device),
+        torch.arange(cutout_size[1], dtype=torch.long, device=x.device),
+        indexing='ij'
+    )
+    grid_x = torch.clamp(grid_x + offset_x - cutout_size[0] // 2, min=0, max=x.size(2) - 1)
+    grid_y = torch.clamp(grid_y + offset_y - cutout_size[1] // 2, min=0, max=x.size(3) - 1)
+    mask = torch.ones(x.size(0), x.size(2), x.size(3), dtype=x.dtype, device=x.device)
+    mask[grid_batch, grid_x, grid_y] = 0
+    return x * mask.unsqueeze(1)
+
+
+_AUGMENT_FNS = {
+    'color': [_rand_brightness, _rand_saturation, _rand_contrast],
+    'translation': [_rand_translation],
+    'cutout': [_rand_cutout],
+}
+
+
+def DiffAugment(x, policy='color,translation,cutout'):
+    if policy:
+        for p in policy.split(','):
+            for f in _AUGMENT_FNS[p]:
+                x = f(x)
+        x = x.contiguous()
+    return x
 
 
 class SLE(nn.Module):
@@ -178,25 +248,53 @@ class DiscriminadorFastGAN(nn.Module):
 
 class EntrenadorFastGAN:
     """
-    Entrenador de FastGAN con Hinge Loss + Normalización Espectral + Pérdida Perceptiva (0.2).
+    Entrenador de FastGAN con Hinge Loss + Normalización Espectral + Pérdida de Reconstrucción (0.2)
+    + DiffAugment (few-shot) + Generador EMA (promedio móvil de pesos para inferencia).
     """
-    def __init__(self, dispositivo, dim_latente=100, canales_img=3, lr=0.0002):
+    def __init__(self, dispositivo, dim_latente=100, canales_img=3, lr=0.0002,
+                 politica_aug='color,translation,cutout', ema_beta=0.999):
         self.dispositivo = dispositivo
         self.dim_latente = dim_latente
+        self.politica_aug = politica_aug
+        self.ema_beta = ema_beta
+        self.pasos_totales = 0
+
         self.generador = GeneradorFastGAN(dim_latente, canales_img).to(dispositivo)
         self.discriminador = DiscriminadorFastGAN(canales_img).to(dispositivo)
+
+        # Copia EMA del generador: es la que se usa para muestrear/generar (más nítida y estable).
+        self.generador_ema = copy.deepcopy(self.generador).eval()
+        for p in self.generador_ema.parameters():
+            p.requires_grad_(False)
 
         self.opt_gen = torch.optim.Adam(self.generador.parameters(), lr=lr, betas=(0.5, 0.999))
         self.opt_dis = torch.optim.Adam(self.discriminador.parameters(), lr=lr, betas=(0.5, 0.999))
 
         self.ruido_fijo = torch.randn(64, dim_latente, 1, 1, device=dispositivo)
 
-    def guardar_checkpoint(self, epoca, ruta_dir="./datos/resultados/checkpoints_dcgan"):
+    @torch.no_grad()
+    def _actualizar_ema(self):
+        # Warm-up: al inicio el EMA sigue de cerca a G, luego se estabiliza en ema_beta.
+        beta = min(self.ema_beta, (1.0 + self.pasos_totales) / (10.0 + self.pasos_totales))
+        for p_ema, p in zip(self.generador_ema.parameters(), self.generador.parameters()):
+            p_ema.lerp_(p, 1.0 - beta)
+        for b_ema, b in zip(self.generador_ema.buffers(), self.generador.buffers()):
+            b_ema.copy_(b)
+
+    @torch.no_grad()
+    def generar(self, z):
+        """Genera imágenes con el generador EMA en modo evaluación. Devuelve tensores en [-1, 1]."""
+        self.generador_ema.eval()
+        return self.generador_ema(z.to(self.dispositivo))
+
+    def guardar_checkpoint(self, epoca, ruta_dir="./datos/resultados/checkpoints_fastgan"):
         os.makedirs(ruta_dir, exist_ok=True)
         ruta = os.path.join(ruta_dir, f"fastgan_epoca_{epoca}.pth")
         torch.save({
             'epoca': epoca,
+            'pasos_totales': self.pasos_totales,
             'gen_state_dict': self.generador.state_dict(),
+            'gen_ema_state_dict': self.generador_ema.state_dict(),
             'dis_state_dict': self.discriminador.state_dict(),
             'opt_gen_state_dict': self.opt_gen.state_dict(),
             'opt_dis_state_dict': self.opt_dis.state_dict(),
@@ -207,9 +305,12 @@ class EntrenadorFastGAN:
     def cargar_checkpoint(self, ruta):
         checkpoint = torch.load(ruta, map_location=self.dispositivo)
         self.generador.load_state_dict(checkpoint['gen_state_dict'])
+        # Compatibilidad con checkpoints antiguos sin EMA
+        self.generador_ema.load_state_dict(checkpoint.get('gen_ema_state_dict', checkpoint['gen_state_dict']))
         self.discriminador.load_state_dict(checkpoint['dis_state_dict'])
         self.opt_gen.load_state_dict(checkpoint['opt_gen_state_dict'])
         self.opt_dis.load_state_dict(checkpoint['opt_dis_state_dict'])
+        self.pasos_totales = checkpoint.get('pasos_totales', 0)
         print(f"[FastGAN] Checkpoint cargado desde: {ruta}")
         return checkpoint['epoca']
 
@@ -230,36 +331,36 @@ class EntrenadorFastGAN:
                 batch_size = imgs_reales.size(0)
 
                 # === 1. Entrenamiento Discriminador (Hinge Loss + Self-Supervised Rec Loss 0.2) ===
+                # DiffAugment se aplica a reales y falsas: D nunca ve la imagen "cruda",
+                # lo que evita que memorice las pocas imágenes del dataset.
                 self.opt_dis.zero_grad()
 
-                real_logits, rec_img, real_patch = self.discriminador(imgs_reales, rec=True)
+                reales_aug = DiffAugment(imgs_reales, self.politica_aug)
+                real_logits, rec_img, real_patch = self.discriminador(reales_aug, rec=True)
                 loss_d_real = F.relu(1.0 - real_logits).mean()
                 loss_rec = F.mse_loss(rec_img, real_patch)
 
                 ruido = torch.randn(batch_size, self.dim_latente, 1, 1, device=self.dispositivo)
                 imgs_falsas = self.generador(ruido)
-                fake_logits = self.discriminador(imgs_falsas.detach())
+                fake_logits = self.discriminador(DiffAugment(imgs_falsas.detach(), self.politica_aug))
                 loss_d_fake = F.relu(1.0 + fake_logits).mean()
 
                 loss_D = loss_d_real + loss_d_fake + (0.2 * loss_rec)
                 loss_D.backward()
                 self.opt_dis.step()
 
-                # === 2. Entrenamiento Generador (Hinge Loss) ===
-                pasos_G = 2
-                loss_G_acum = 0.0
-                for _ in range(pasos_G):
-                    self.opt_gen.zero_grad()
-                    ruido_G = torch.randn(batch_size, self.dim_latente, 1, 1, device=self.dispositivo)
-                    falsas_G = self.generador(ruido_G)
-                    g_logits = self.discriminador(falsas_G)
-                    loss_G = -g_logits.mean()
-                    loss_G.backward()
-                    self.opt_gen.step()
-                    loss_G_acum += loss_G.item()
+                # === 2. Entrenamiento Generador (Hinge Loss), 1 paso por paso de D ===
+                self.opt_gen.zero_grad()
+                g_logits = self.discriminador(DiffAugment(imgs_falsas, self.politica_aug))
+                loss_G = -g_logits.mean()
+                loss_G.backward()
+                self.opt_gen.step()
+
+                self.pasos_totales += 1
+                self._actualizar_ema()
 
                 total_loss_D += loss_D.item()
-                total_loss_G += (loss_G_acum / pasos_G)
+                total_loss_G += loss_G.item()
                 batches += 1
 
             loss_D_avg = total_loss_D / max(1, batches)
@@ -277,7 +378,6 @@ class EntrenadorFastGAN:
             ruta_destino = os.path.join(ruta_destino, clase_nombre)
 
         os.makedirs(ruta_destino, exist_ok=True)
-        self.generador.eval()
         rutas_guardadas = []
 
         generadas = 0
@@ -285,7 +385,7 @@ class EntrenadorFastGAN:
             while generadas < cantidad:
                 tamano_batch_actual = min(batch_size, cantidad - generadas)
                 z_ruido = torch.randn(tamano_batch_actual, self.dim_latente, 1, 1, device=self.dispositivo)
-                imgs_falsas = self.generador(z_ruido)
+                imgs_falsas = self.generar(z_ruido)
 
                 for idx in range(tamano_batch_actual):
                     img_tensor = imgs_falsas[idx]

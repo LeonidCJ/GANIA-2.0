@@ -8,6 +8,13 @@ CONFIG = {
         "MAX_EPOCAS": 50,
         "DIM_LATENTE": 100,
         "INTERVALO_CHECKPOINT": 5,
+        # Lotes por época (muestreo con reemplazo). Con 80 imgs y batch 32, sin esto
+        # una época serían solo 3 iteraciones. 500 épocas x 50 = 25.000 iteraciones.
+        "ITERACIONES_POR_EPOCA": 50,
+        "INTERVALO_METRICAS": 10,       # Calcular FID/KID/Diversidad cada N épocas
+        "MUESTRAS_METRICAS": 256,       # Imágenes sintéticas usadas para las métricas
+        "EMA_BETA": 0.999,              # Promedio móvil de pesos del generador
+        "POLITICA_DIFFAUGMENT": "color,translation,cutout",
     },
     "AUMENTO": {
         "CANTIDAD_SINTETICAS": 500,  # Cantidad de imágenes sintéticas a generar por clase

@@ -6,7 +6,7 @@
 
 GANIA 2.0 es una plataforma avanzada desarrollada en Python para el entrenamiento, visualización y análisis de Redes Neuronales Generativas (GANs). Este proyecto forma parte de una investigación de tesis y busca proporcionar una interfaz intuitiva para experimentar con arquitecturas de vanguardia en el campo del aprendizaje profundo generativo.
 
-## 🚀 Características Principales
+## Características Principales
 
 - **Arquitecturas Implementadas:**
     - **DCGAN (Deep Convolutional GAN):** Generación de imágenes desde ruido aleatorio.
@@ -18,7 +18,7 @@ GANIA 2.0 es una plataforma avanzada desarrollada en Python para el entrenamient
 - **Sistema de Checkpoints:** Guardado automático del estado de los modelos para reanudación y evaluación posterior.
 - **Gestión de Datos:** Cargadores optimizados para CIFAR-10 y datasets personalizados (ej. Orange dataset).
 
-## 🛠️ Tecnologías
+## Tecnologías
 
 - **Lenguaje:** Python 3.8+
 - **Framework de IA:** PyTorch / Torchvision
@@ -26,7 +26,7 @@ GANIA 2.0 es una plataforma avanzada desarrollada en Python para el entrenamient
 - **Procesamiento de Imágenes:** Pillow, OpenCV, NumPy
 - **Visualización:** Matplotlib
 
-## 📂 Estructura del Proyecto
+## Estructura del Proyecto
 
 ```text
 GANIA 2.0/
@@ -41,7 +41,7 @@ GANIA 2.0/
 └── requirements.txt    # Dependencias del proyecto
 ```
 
-## ⚙️ Instalación
+## Instalación
 
 1. **Clonar el repositorio:**
    ```bash
@@ -61,7 +61,7 @@ GANIA 2.0/
    pip install -r requirements.txt
    ```
 
-## 🎮 Uso
+## Uso
 
 Para iniciar la aplicación, simplemente ejecuta el archivo principal:
 
@@ -69,7 +69,7 @@ Para iniciar la aplicación, simplemente ejecuta el archivo principal:
 python main.py
 ```
 
-## 📈 Mejoras en Desarrollo (Roadmap)
+## Mejoras en Desarrollo (Roadmap)
 
 - [ ] Implementación de métricas cuantitativas (FID, Inception Score).
 - [ ] Gráficas de pérdida (Loss) integradas en tiempo real en la UI.

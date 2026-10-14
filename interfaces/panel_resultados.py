@@ -58,12 +58,15 @@ class PanelEstadisticasFastGAN(QGroupBox):
 
         self.ax1 = self.figura.add_subplot(121)
         self.ax2 = self.figura.add_subplot(122)
+        self.ax2b = self.ax2.twinx()  # Eje secundario para Diversidad (%)
 
         self.epochs = []
         self.losses_G = []
         self.losses_D = []
         self.epochs_fid = []
         self.fid_values = []
+        self.epochs_kid = []
+        self.kid_values = []
         self.epochs_div = []
         self.div_values = []
         self.last_draw_time = 0
@@ -77,18 +80,22 @@ class PanelEstadisticasFastGAN(QGroupBox):
         self.losses_D = []
         self.epochs_fid = []
         self.fid_values = []
+        self.epochs_kid = []
+        self.kid_values = []
         self.epochs_div = []
         self.div_values = []
         self.ax1.clear()
         self.ax2.clear()
+        self.ax2b.clear()
         self.canvas.draw()
 
-    def actualizar(self, epoca, loss_G, loss_D, fid=None, diversidad=None):
+    def actualizar(self, epoca, loss_G, loss_D, fid=None, diversidad=None, kid=None):
         self.epochs.append(epoca)
         self.losses_G.append(loss_G)
         self.losses_D.append(loss_D)
 
-        if (time.time() - self.last_draw_time < 0.4) and (fid is None):
+        hay_metricas = fid is not None or kid is not None or diversidad is not None
+        if (time.time() - self.last_draw_time < 0.4) and not hay_metricas:
             return
         self.last_draw_time = time.time()
 
@@ -118,36 +125,50 @@ class PanelEstadisticasFastGAN(QGroupBox):
         self.ax1.legend(loc="upper right", fontsize='x-small', framealpha=0.5)
         for s in self.ax1.spines.values(): s.set_color(color_grid)
 
-        # --- PLOT 2: CALIDAD GAN (FID & DIVERSIDAD) ---
-        if fid is not None:
+        # --- PLOT 2: CALIDAD GAN (KID/FID & DIVERSIDAD) ---
+        def _a_float(v):
             try:
-                val = float(fid)
-                self.fid_values.append(val)
-                self.epochs_fid.append(epoca)
-            except (ValueError, TypeError):
-                pass
+                return float(v.replace("%", "")) if isinstance(v, str) else float(v)
+            except (ValueError, TypeError, AttributeError):
+                return None
 
-        if diversidad is not None:
-            try:
-                val = float(diversidad.replace("%", "")) if isinstance(diversidad, str) else float(diversidad)
-                self.div_values.append(val)
-                self.epochs_div.append(epoca)
-            except (ValueError, TypeError):
-                pass
+        for valor, lista_ep, lista_val in ((fid, self.epochs_fid, self.fid_values),
+                                           (kid, self.epochs_kid, self.kid_values),
+                                           (diversidad, self.epochs_div, self.div_values)):
+            if valor is not None:
+                v = _a_float(valor)
+                if v is not None:
+                    lista_val.append(v)
+                    lista_ep.append(epoca)
 
         self.ax2.clear()
+        self.ax2b.clear()
+        self.ax2b.patch.set_visible(False)
+        self.ax2b.yaxis.tick_right()
+        self.ax2b.yaxis.set_label_position("right")
         self.ax2.set_facecolor(bg_plots)
-        if self.fid_values:
-            self.ax2.plot(self.epochs_fid, self.fid_values, 'o-', label="FID Score", color="#8B5CF6", markersize=4)
+        lineas = []
+        # KID es fiable con pocas muestras: se prioriza sobre FID en el gráfico.
+        if self.kid_values:
+            lineas += self.ax2.plot(self.epochs_kid, self.kid_values, 'o-', label="KID×1000 (↓)", color="#8B5CF6", markersize=4)
+            self.ax2.set_ylabel("KID×1000", color=color_sub, fontsize=8)
+        elif self.fid_values:
+            lineas += self.ax2.plot(self.epochs_fid, self.fid_values, 'o-', label="FID (↓)", color="#8B5CF6", markersize=4)
+            self.ax2.set_ylabel("FID", color=color_sub, fontsize=8)
         if self.div_values:
-            self.ax2.plot(self.epochs_div, self.div_values, 's--', label="Diversidad %", color="#10B981", markersize=4)
+            lineas += self.ax2b.plot(self.epochs_div, self.div_values, 's--', label="Diversidad % (↑)", color="#10B981", markersize=4)
+            self.ax2b.set_ylim(0, max(110, max(self.div_values) * 1.1))
+            self.ax2b.set_ylabel("Diversidad %", color=color_sub, fontsize=8)
 
-        self.ax2.set_title("Calidad (FID) y Diversidad", color=color_main, fontsize=10, fontweight='bold')
+        self.ax2.set_title("Calidad (KID) y Diversidad", color=color_main, fontsize=10, fontweight='bold')
         self.ax2.set_xlabel("Épocas", color=color_sub, fontsize=8)
         self.ax2.tick_params(colors=color_sub, labelsize=7)
+        self.ax2b.tick_params(colors=color_sub, labelsize=7)
         self.ax2.grid(True, linestyle="--", alpha=0.3, color=color_grid)
-        self.ax2.legend(loc="upper right", fontsize='x-small', framealpha=0.5)
+        if lineas:
+            self.ax2.legend(lineas, [l.get_label() for l in lineas], loc="upper right", fontsize='x-small', framealpha=0.5)
         for s in self.ax2.spines.values(): s.set_color(color_grid)
+        for s in self.ax2b.spines.values(): s.set_color(color_grid)
 
         self.figura.tight_layout()
         self.canvas.draw()

@@ -2,13 +2,14 @@
 import os
 import math
 from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QLabel,
-                              QComboBox, QPushButton, QDoubleSpinBox,
+                              QComboBox, QPushButton, QDoubleSpinBox, QCheckBox,
                               QProgressBar, QSpinBox, QFileDialog, QLineEdit, QMessageBox)
 from PyQt5.QtCore import pyqtSignal, Qt, QUrl
 from PyQt5.QtGui import QDesktopServices
 import qtawesome as qta
 
 from utils.gestor_logs import obtener_logger
+from utils.dispositivo import detectar_gpu, obtener_dispositivo
 from utils.cargador_datos import (extraer_zip_dataset, descargar_extraer_url,
                                   preparar_y_analizar_dataset, obtener_clases_disponibles)
 
@@ -242,6 +243,14 @@ class PanelControlFastGAN(QGroupBox):
         self.spin_epocas.setFixedHeight(35)
         layout.addWidget(self.spin_epocas)
 
+        # Dispositivo de entrenamiento (GPU NVIDIA / CPU)
+        self.chk_cuda = QCheckBox("Entrenar con GPU (CUDA)")
+        self.lbl_estado_gpu = QLabel()
+        self.lbl_estado_gpu.setWordWrap(True)
+        layout.addWidget(self.chk_cuda)
+        layout.addWidget(self.lbl_estado_gpu)
+        self._configurar_gpu()
+
         # Progreso
         self.barra_progreso = QProgressBar()
         self.barra_progreso.setFixedHeight(20)
@@ -264,6 +273,36 @@ class PanelControlFastGAN(QGroupBox):
         btn_layout.addWidget(self.btn_iniciar)
         btn_layout.addWidget(self.btn_detener)
         layout.addLayout(btn_layout)
+
+    def _configurar_gpu(self):
+        """Detecta CUDA: si hay GPU usable se activa la casilla; si no, queda desactivada."""
+        info = detectar_gpu()
+        self._gpu_disponible = info["disponible"]
+
+        self.chk_cuda.setEnabled(self._gpu_disponible)
+        self.chk_cuda.setChecked(self._gpu_disponible)
+        self.chk_cuda.setToolTip(info["detalle"])
+        self.lbl_estado_gpu.setToolTip(info["detalle"])
+
+        if self._gpu_disponible:
+            icono, color, fondo = "✔", "#10B981", "rgba(16, 185, 129, 0.12)"
+        elif info["nombre"]:
+            icono, color, fondo = "⚠", "#F59E0B", "rgba(245, 158, 11, 0.12)"   # GPU sin PyTorch-CUDA
+        else:
+            icono, color, fondo = "✖", "#EF4444", "rgba(239, 68, 68, 0.12)"
+        self.lbl_estado_gpu.setText(f"{icono} {info['mensaje']}")
+        self.lbl_estado_gpu.setStyleSheet(
+            f"font-size: 11px; color: {color}; background: {fondo}; padding: 6px; border-radius: 6px;"
+        )
+        logger.info(f"[GPU] {info['mensaje']} | {info['detalle']}")
+
+    def obtener_dispositivo(self):
+        """torch.device a usar según la casilla (CUDA solo si está disponible y marcada)."""
+        return obtener_dispositivo(usar_gpu=self.chk_cuda.isChecked())
+
+    def set_entrenando(self, entrenando):
+        """Bloquea el cambio de dispositivo mientras hay un entrenamiento en curso."""
+        self.chk_cuda.setEnabled(self._gpu_disponible and not entrenando)
 
 
 # Alias para retrocompatibilidad

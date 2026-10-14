@@ -37,12 +37,33 @@ class WorkerFastGAN(QThread):
 
     def run(self):
         try:
+            from config import CONFIG
+            from utils.cargador_datos import cargar_imagenes_reales_clase
+            from utils.metricas_ia import calcular_metricas_calidad, extraer_caracteristicas_reales
+
+            cfg = CONFIG["FASTGAN"]
+            iters_epoca = cfg.get("ITERACIONES_POR_EPOCA", 50)
+            intervalo_metricas = cfg.get("INTERVALO_METRICAS", 10)
+            n_muestras_metricas = cfg.get("MUESTRAS_METRICAS", 256)
+            dispositivo_str = str(self.modelo.dispositivo)
+
             self.senal_log.emit(f"[Worker FastGAN] Cargando clase '{self.clase_seleccionada or 'Todas'}'...")
             cargador = crear_cargador_fastgan_clase(
                 self.ruta_dataset,
                 clase_seleccionada=self.clase_seleccionada,
-                batch_size=self.batch_size
+                batch_size=self.batch_size,
+                iteraciones_por_epoca=iters_epoca
             )
+            self.senal_log.emit(
+                f"[Worker FastGAN] {iters_epoca} iteraciones/época x {self.max_epocas} épocas = "
+                f"{iters_epoca * self.max_epocas:,} iteraciones totales (DiffAugment + EMA activos)."
+            )
+
+            # Imágenes reales (todas, sin aumentos) y sus features: se calculan una sola vez.
+            reales_metricas = cargar_imagenes_reales_clase(self.ruta_dataset, self.clase_seleccionada)
+            feats_reales = None
+            if len(reales_metricas) >= 5:
+                feats_reales = extraer_caracteristicas_reales(reales_metricas, dispositivo_str)
 
             for epoca in range(self.max_epocas):
                 if self._abortar:
@@ -57,32 +78,37 @@ class WorkerFastGAN(QThread):
                 if self._abortar:
                     return
 
-                # Muestra visual: Rejilla de 3x3 (9 imágenes sintéticas distintas)
-                with torch.no_grad():
-                    sample_tensors = self.modelo.generador(self.modelo.ruido_fijo[:9]).cpu()
-                    grid_tensor = vutils.make_grid(sample_tensors, nrow=3, normalize=True, value_range=(-1, 1), padding=2)
-                    img_muestra = tensor_to_numpy(grid_tensor)
+                # Muestra visual: Rejilla de 3x3 con el generador EMA en modo evaluación
+                sample_tensors = self.modelo.generar(self.modelo.ruido_fijo[:9]).cpu()
+                grid_tensor = vutils.make_grid(sample_tensors, nrow=3, normalize=True, value_range=(-1, 1), padding=2)
+                img_muestra = tensor_to_numpy(grid_tensor)
 
-                    # Imágenes sintéticas individuales para el cálculo correcto del FID
-                    falsas_individuales = [tensor_to_numpy(sample_tensors[k]) for k in range(min(9, len(sample_tensors)))]
-
-                # Muestras reales para FID
-                reales_muestras = None
-                if epoca == 0:
+                # Métricas (cada N épocas, en la primera y en la última)
+                metricas = None
+                num_ep = epoca + 1
+                if num_ep == 1 or num_ep % intervalo_metricas == 0 or num_ep == self.max_epocas:
                     try:
-                        batch_reales, _ = next(iter(cargador))
-                        reales_muestras = [tensor_to_numpy(t) for t in batch_reales[:16]]
-                    except: pass
+                        falsas = []
+                        while len(falsas) < n_muestras_metricas:
+                            n = min(64, n_muestras_metricas - len(falsas))
+                            z = torch.randn(n, self.modelo.dim_latente, 1, 1, device=self.modelo.dispositivo)
+                            falsas.extend(tensor_to_numpy(t) for t in self.modelo.generar(z).cpu())
+                        metricas = calcular_metricas_calidad(reales_metricas, falsas, dispositivo_str, feats_reales=feats_reales)
+                        self.senal_log.emit(
+                            f"[Métricas] Época {num_ep}: KID×1000={metricas.get('kid')} | FID={metricas.get('fid')} | "
+                            f"Diversidad={metricas.get('diversidad')} ({len(falsas)} sintéticas vs {len(reales_metricas)} reales)"
+                        )
+                    except Exception as e:
+                        self.senal_log.emit(f"[Métricas] Error: {e}")
 
-                self.finalizado_epoca.emit(epoca + 1, loss_G, loss_D, {
+                self.finalizado_epoca.emit(num_ep, loss_G, loss_D, {
                     "img": img_muestra,
-                    "reales": reales_muestras,
-                    "falsas_ind": falsas_individuales
+                    "metricas": metricas
                 })
 
                 # Guardar checkpoint
-                if (epoca + 1) % 5 == 0 or (epoca + 1) == self.max_epocas:
-                    self.modelo.guardar_checkpoint(epoca + 1)
+                if num_ep % cfg.get("INTERVALO_CHECKPOINT", 5) == 0 or num_ep == self.max_epocas:
+                    self.modelo.guardar_checkpoint(num_ep)
 
             self.entrenamiento_completado.emit(f"Entrenamiento FastGAN completado para clase '{self.clase_seleccionada or 'Base'}'.")
 
@@ -134,7 +160,7 @@ class WorkerGeneracionMasiva(QThread):
 
             # Rejilla para vista previa de generadas en UI
             with torch.no_grad():
-                sample_tensors = self.fastgan.generador(torch.randn(9, self.fastgan.dim_latente, 1, 1, device=self.fastgan.dispositivo)).cpu()
+                sample_tensors = self.fastgan.generar(torch.randn(9, self.fastgan.dim_latente, 1, 1, device=self.fastgan.dispositivo)).cpu()
                 grid_tensor = vutils.make_grid(sample_tensors, nrow=3, normalize=True, value_range=(-1, 1), padding=2)
                 img_grid_sinteticas = tensor_to_numpy(grid_tensor)
 
