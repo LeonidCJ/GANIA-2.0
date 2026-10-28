@@ -99,3 +99,55 @@ class ToggleTemaNeumorfico(QFrame):
         self.actualizar_ui()
         self.tema_cambiado.emit(self._es_oscuro)
         super().mouseReleaseEvent(event)
+
+class NotaIcono(QFrame):
+    """
+    Etiqueta compacta compuesta por un icono vectorial (QtAwesome) + texto.
+    Sustituye a los emojis en la interfaz para mantener un estilo visual consistente.
+
+    Uso:
+        nota = NotaIcono()
+        nota.establecer("fa5s.bolt", "Texto", color="#059669", fondo="rgba(16,185,129,0.12)")
+    """
+    def __init__(self, parent=None, tam_icono=13, compacta=False):
+        super().__init__(parent)
+        self.tam_icono = tam_icono
+        self.compacta = compacta
+        self.setObjectName("NotaIcono")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        self.lbl_icono = QLabel()
+        self.lbl_icono.setFixedSize(tam_icono + 2, tam_icono + 2)
+        self.lbl_icono.setAlignment(Qt.AlignCenter)
+        self.lbl_icono.setStyleSheet("background: transparent;")
+
+        self.lbl_texto = QLabel()
+        self.lbl_texto.setWordWrap(not compacta)
+        self.lbl_texto.setStyleSheet("background: transparent;")
+
+        layout.addWidget(self.lbl_icono, 0, Qt.AlignTop if not compacta else Qt.AlignVCenter)
+        layout.addWidget(self.lbl_texto, 1)
+
+    def establecer(self, icono, texto, color="#64748B", fondo=None, negrita=False, tam_fuente=11):
+        self.lbl_icono.setPixmap(qta.icon(icono, color=color).pixmap(self.tam_icono, self.tam_icono))
+        self.lbl_texto.setText(texto)
+        peso = "bold" if negrita else "600" if fondo else "normal"
+        self.lbl_texto.setStyleSheet(
+            f"background: transparent; color: {color}; font-size: {tam_fuente}px; font-weight: {peso};"
+        )
+        if fondo:
+            relleno = "4px 10px" if self.compacta else "6px 8px"
+            radio = 10 if self.compacta else 8
+            self.setStyleSheet(
+                f"QFrame#NotaIcono {{ background: {fondo}; border-radius: {radio}px; padding: {relleno}; }}"
+            )
+            self.layout().setContentsMargins(8, 4, 8, 4) if self.compacta else self.layout().setContentsMargins(8, 6, 8, 6)
+        else:
+            self.setStyleSheet("QFrame#NotaIcono { background: transparent; }")
+            self.layout().setContentsMargins(2, 2, 2, 2)
+
+    def text(self):
+        return self.lbl_texto.text()

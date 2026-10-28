@@ -163,8 +163,8 @@ ESTILO_OSCURO = """
     QProgressBar::chunk { background-color: #3B82F6; border-radius: 8px; }
 
     QMessageBox { background-color: #1E293B; }
-    QMessageBox QLabel { color: #F8FAFC; font-size: 15px; }
-    QMessageBox QPushButton { background-color: #3B82F6; color: white; padding: 8px 25px; border-radius: 10px; min-width: 110px; }
+    QMessageBox QLabel { color: #F8FAFC; font-size: 13px; }
+    QMessageBox QPushButton { background-color: #3B82F6; color: white; padding: 6px 12px; border-radius: 8px; font-size: 12px; min-width: 85px; }
 """
 
 ESTILO_CLARO = """
@@ -304,8 +304,8 @@ ESTILO_CLARO = """
     QProgressBar::chunk { background-color: #3B82F6; border-radius: 8px; }
 
     QMessageBox { background-color: #FFFFFF; }
-    QMessageBox QLabel { color: #1E293B; font-size: 15px; }
-    QMessageBox QPushButton { background-color: #3B82F6; color: white; padding: 8px 20px; border-radius: 10px; min-width: 110px; }
+    QMessageBox QLabel { color: #1E293B; font-size: 13px; }
+    QMessageBox QPushButton { background-color: #3B82F6; color: white; padding: 6px 12px; border-radius: 8px; font-size: 12px; min-width: 85px; }
 """
 
 def cargar_estilos(aplicacion):

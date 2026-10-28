@@ -38,7 +38,7 @@ class PantallaLogin(QWidget):
         h_logo.setAlignment(Qt.AlignCenter)
         lbl_icon = QLabel()
         lbl_icon.setPixmap(qta.icon("fa5s.dna", color="#3B82F6").pixmap(50, 50))
-        lbl_logo = QLabel("GANIA 2.0")
+        lbl_logo = QLabel("GANIA")
         lbl_logo.setStyleSheet("font-size: 32px; font-weight: bold; color: #3B82F6;")
         h_logo.addWidget(lbl_icon); h_logo.addWidget(lbl_logo)
         card_layout.addLayout(h_logo)

@@ -5,30 +5,41 @@ import json
 import csv
 import numpy as np
 from pathlib import Path
-from PIL import Image
 
-EXTENSIONES_VALIDAS = ('.png', '.jpg', '.jpeg', '.webp')
+EXTENSIONES_VALIDAS = ('.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tif', '.tiff')
+
 
 def validar_imagen(ruta):
-    """Verifica si el archivo existe, tiene extensión válida y se puede abrir."""
-    if not os.path.isfile(ruta) or not ruta.lower().endswith(EXTENSIONES_VALIDAS):
-        return False
+    """
+    Verificación ultrarrápida de archivo de imagen válida sin bloquear el hilo de E/S.
+    Comprueba existencia, extensión y tamaño mínimo (> 64 bytes).
+    """
     try:
-        with Image.open(ruta) as img:
-            img.verify()
-        return True
-    except Exception:
+        return (
+            os.path.isfile(ruta)
+            and ruta.lower().endswith(EXTENSIONES_VALIDAS)
+            and os.path.getsize(ruta) > 64
+        )
+    except OSError:
         return False
 
-def buscar_archivos_por_extension(dir_base, extensiones=('.mat',)):
-    """Busca recursivamente archivos con ciertas extensiones hasta 3 niveles de profundidad."""
+
+def buscar_archivos_por_extension(dir_base, extensiones=('.mat',), max_profundidad=3):
+    """Busca recursivamente archivos con ciertas extensiones hasta max_profundidad niveles."""
     encontrados = []
-    for root, dirs, files in os.walk(dir_base):
-        dirs[:] = [d for d in dirs if not d.startswith('.')]
+    dir_base_str = str(dir_base)
+    prof_base = dir_base_str.rstrip(os.sep).count(os.sep)
+    for root, dirs, files in os.walk(dir_base_str):
+        prof_actual = root.rstrip(os.sep).count(os.sep) - prof_base
+        if prof_actual >= max_profundidad:
+            dirs[:] = []
+        else:
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
         for f in files:
             if f.lower().endswith(extensiones):
                 encontrados.append(Path(root) / f)
     return encontrados
+
 
 class AdaptadorBase:
     """Clase base abstracta para adaptadores de datasets."""
@@ -48,8 +59,8 @@ class AdaptadorBase:
 
 class AdaptadorOxford17(AdaptadorBase):
     """
-    Maneja datasets secuenciales por bloques de N imágenes, e.g. Oxford Flowers 17
-    (17 clases x 80 imágenes = 1360 imágenes numéricas consecutivas).
+    Maneja específicamente el dataset Oxford Flowers 17
+    (17 clases x 80 imágenes = 1360 imágenes image_0001.jpg .. image_1360.jpg).
     """
     CLASS_NAMES = [
         "daffodil", "snowdrop", "lily_valley", "bluebell", "crocus",
@@ -59,23 +70,41 @@ class AdaptadorOxford17(AdaptadorBase):
     ]
 
     def puede_procesar(self):
-        if not self.ruta_origen.exists(): return False
+        if not self.ruta_origen.exists():
+            return False
+        nombre_ruta = str(self.ruta_origen).lower()
         dir_imgs, archivos = self._obtener_archivos_imagenes()
-        return len(archivos) >= 1360 or ("17flowers" in str(self.ruta_origen).lower())
+        if "17flowers" in nombre_ruta and len(archivos) >= 1360:
+            return True
+        # Solo activar si es una carpeta plana de exactamente 1360 imágenes con prefijo image_
+        if len(archivos) == 1360 and archivos[0].lower().startswith("image_"):
+            return True
+        return False
 
     def _obtener_archivos_imagenes(self):
         for root, dirs, files in os.walk(self.ruta_origen):
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
             validos = [f for f in files if f.lower().endswith(EXTENSIONES_VALIDAS)]
             if len(validos) >= 1360:
                 validos.sort()
                 return Path(root), validos
 
-        validos = [f for f in os.listdir(self.ruta_origen) if (self.ruta_origen / f).is_file() and f.lower().endswith(EXTENSIONES_VALIDAS)]
-        validos.sort()
-        return self.ruta_origen, validos
+        try:
+            validos = [
+                f for f in os.listdir(self.ruta_origen)
+                if (self.ruta_origen / f).is_file() and f.lower().endswith(EXTENSIONES_VALIDAS)
+            ]
+            validos.sort()
+            return self.ruta_origen, validos
+        except OSError:
+            return self.ruta_origen, []
 
     def analizar(self):
-        resumen = {"train": {}, "val": {}, "test": {}, "total_por_clase": {}, "invalidas": 0, "formato": "Caso D: Oxford Flowers 17 (Taxonomía 17 Clases x 80 imgs)"}
+        resumen = {
+            "train": {}, "val": {}, "test": {}, "total_por_clase": {},
+            "invalidas": 0,
+            "formato": "Caso D: Oxford Flowers 17 (17 Clases x 80 imgs)"
+        }
         dir_imgs, archivos = self._obtener_archivos_imagenes()
 
         imgs_per_class = 80
@@ -97,7 +126,11 @@ class AdaptadorOxford17(AdaptadorBase):
         return resumen
 
     def preparar(self):
-        resumen = self.analizar()
+        resumen = {
+            "train": {}, "val": {}, "test": {}, "total_por_clase": {},
+            "invalidas": 0,
+            "formato": "Caso D: Oxford Flowers 17 (17 Clases x 80 imgs)"
+        }
         dir_imgs, archivos = self._obtener_archivos_imagenes()
 
         if self.ruta_destino.exists():
@@ -112,10 +145,17 @@ class AdaptadorOxford17(AdaptadorBase):
             end = (class_idx + 1) * imgs_per_class
             class_files = archivos[start:end]
 
+            valid_cnt = 0
             for f in class_files:
                 src_path = dir_imgs / f
                 if validar_imagen(str(src_path)):
                     shutil.copy2(src_path, dest_dir / f)
+                    valid_cnt += 1
+                else:
+                    resumen["invalidas"] += 1
+
+            resumen["train"][class_name] = valid_cnt
+            resumen["total_por_clase"][class_name] = valid_cnt
 
         return str(self.ruta_destino), resumen
 
@@ -126,42 +166,61 @@ class AdaptadorEstructuraCarpeta(AdaptadorBase):
     y Caso B (particiones train/val/test: dataset/train/gatos/).
     """
     def puede_procesar(self):
-        if not self.ruta_origen.exists(): return False
+        if not self.ruta_origen.exists():
+            return False
         subdirs = [d for d in os.listdir(self.ruta_origen) if (self.ruta_origen / d).is_dir() and not d.startswith('.')]
         return len(subdirs) > 0
 
     def analizar(self):
         resumen = {"train": {}, "val": {}, "test": {}, "total_por_clase": {}, "invalidas": 0, "formato": "A/B (Carpetas)"}
 
-        subdirs = [d.lower() for d in os.listdir(self.ruta_origen) if (self.ruta_origen / d).is_dir()]
-        particiones_encontradas = [p for p in ["train", "val", "test"] if p in subdirs]
+        # Si la carpeta raíz tiene una única subcarpeta contenedora, descender a ella
+        ruta_efectiva = self.ruta_origen
+        subdirs_raw = [d for d in os.listdir(ruta_efectiva) if (ruta_efectiva / d).is_dir() and not d.startswith('.')]
+        if len(subdirs_raw) == 1 and subdirs_raw[0].lower() not in ("train", "val", "test", "valid"):
+            sub_unica = ruta_efectiva / subdirs_raw[0]
+            sub_internas = [d for d in os.listdir(sub_unica) if (sub_unica / d).is_dir() and not d.startswith('.')]
+            if len(sub_internas) >= 1:
+                ruta_efectiva = sub_unica
+                self.ruta_origen = ruta_efectiva
+
+        mapa_subdirs = {d.lower(): d for d in os.listdir(ruta_efectiva) if (ruta_efectiva / d).is_dir() and not d.startswith('.')}
+        particiones_encontradas = [p for p in ["train", "val", "test"] if p in mapa_subdirs]
 
         if particiones_encontradas:
             resumen["formato"] = "Caso B: Particiones (train/val/test)"
             for p in particiones_encontradas:
-                dir_particion = self.ruta_origen / p
-                for c in os.listdir(dir_particion):
+                dir_particion = ruta_efectiva / mapa_subdirs[p]
+                for c in sorted(os.listdir(dir_particion)):
                     dir_clase = dir_particion / c
                     if dir_clase.is_dir() and not c.startswith('.'):
                         validas = 0
-                        for f in os.listdir(dir_clase):
-                            f_path = dir_clase / f
-                            if validar_imagen(str(f_path)): validas += 1
-                            elif f_path.is_file(): resumen["invalidas"] += 1
-                        resumen[p][c] = validas
-                        resumen["total_por_clase"][c] = resumen["total_por_clase"].get(c, 0) + validas
+                        with os.scandir(dir_clase) as entries:
+                            for entry in entries:
+                                if entry.is_file():
+                                    if entry.name.lower().endswith(EXTENSIONES_VALIDAS):
+                                        validas += 1
+                                    else:
+                                        resumen["invalidas"] += 1
+                        if validas > 0:
+                            resumen[p][c] = validas
+                            resumen["total_por_clase"][c] = resumen["total_por_clase"].get(c, 0) + validas
         else:
             resumen["formato"] = "Caso A: Carpetas directas por clase"
-            for c in os.listdir(self.ruta_origen):
-                dir_clase = self.ruta_origen / c
+            for c in sorted(os.listdir(ruta_efectiva)):
+                dir_clase = ruta_efectiva / c
                 if dir_clase.is_dir() and not c.startswith('.'):
                     validas = 0
-                    for f in os.listdir(dir_clase):
-                        f_path = dir_clase / f
-                        if validar_imagen(str(f_path)): validas += 1
-                        elif f_path.is_file(): resumen["invalidas"] += 1
-                    resumen["train"][c] = validas
-                    resumen["total_por_clase"][c] = validas
+                    with os.scandir(dir_clase) as entries:
+                        for entry in entries:
+                            if entry.is_file():
+                                if entry.name.lower().endswith(EXTENSIONES_VALIDAS):
+                                    validas += 1
+                                else:
+                                    resumen["invalidas"] += 1
+                    if validas > 0:
+                        resumen["train"][c] = validas
+                        resumen["total_por_clase"][c] = validas
 
         return resumen
 
@@ -175,7 +234,8 @@ class AdaptadorCSV_JSON(AdaptadorBase):
     Maneja Caso C (imágenes + labels.csv / labels.json / labels.txt).
     """
     def puede_procesar(self):
-        if not self.ruta_origen.exists(): return False
+        if not self.ruta_origen.exists():
+            return False
         archivos = [f.name.lower() for f in buscar_archivos_por_extension(self.ruta_origen, ('.csv', '.json', '.txt'))]
         return any('label' in a or 'class' in a or 'target' in a for a in archivos)
 
@@ -208,19 +268,21 @@ class AdaptadorCSV_JSON(AdaptadorBase):
         for f_path in archivos_meta:
             f_name = f_path.name.lower()
             if f_name.endswith('.csv') and ('label' in f_name or 'class' in f_name or 'target' in f_name):
-                with open(f_path, 'r', encoding='utf-8') as file:
+                with open(f_path, 'r', encoding='utf-8', errors='ignore') as file:
                     reader = csv.reader(file)
-                    header = next(reader, None)
+                    next(reader, None)
                     for row in reader:
-                        if len(row) >= 2: mapa[row[0].strip()] = row[1].strip()
+                        if len(row) >= 2:
+                            mapa[row[0].strip()] = row[1].strip()
             elif f_name.endswith('.json') and ('label' in f_name or 'class' in f_name or 'target' in f_name):
-                with open(f_path, 'r', encoding='utf-8') as file:
+                with open(f_path, 'r', encoding='utf-8', errors='ignore') as file:
                     data = json.load(file)
-                    if isinstance(data, dict): mapa = {k: str(v) for k, v in data.items()}
+                    if isinstance(data, dict):
+                        mapa = {k: str(v) for k, v in data.items()}
         return mapa
 
     def preparar(self):
-        resumen = self.analizar()
+        resumen = {"train": {}, "val": {}, "test": {}, "total_por_clase": {}, "invalidas": 0, "formato": "Caso C: Etiquetas CSV/JSON"}
         mapa = self._leer_etiquetas()
         dir_images = self._encontrar_directorio_imagenes()
 
@@ -232,22 +294,29 @@ class AdaptadorCSV_JSON(AdaptadorBase):
 
         for img_name, label in mapa.items():
             src_path = dir_images / img_name
+            c_name = f"clase_{label}"
             if validar_imagen(str(src_path)):
-                dest_dir = dir_train / f"clase_{label}"
+                dest_dir = dir_train / c_name
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src_path, dest_dir / img_name)
+                resumen["train"][c_name] = resumen["train"].get(c_name, 0) + 1
+                resumen["total_por_clase"][c_name] = resumen["total_por_clase"].get(c_name, 0) + 1
+            else:
+                resumen["invalidas"] += 1
 
         return str(self.ruta_destino), resumen
 
 
 class AdaptadorMatGeneral(AdaptadorBase):
     """
-    Maneja Caso D: Datasets con metadatos .mat (e.g. Oxford Flowers 102 u otros con imagelabels.mat / setid.mat / labels.mat).
+    Maneja Caso D: Datasets con metadatos .mat (e.g. Oxford Flowers 102).
     """
     def puede_procesar(self):
-        if not self.ruta_origen.exists(): return False
+        if not self.ruta_origen.exists():
+            return False
         archivos_mat = buscar_archivos_por_extension(self.ruta_origen, ('.mat',))
-        if not archivos_mat: return False
+        if not archivos_mat:
+            return False
 
         labels, _ = self._leer_mat_labels_y_setid()
         return labels is not None and len(labels) > 1
@@ -261,6 +330,7 @@ class AdaptadorMatGeneral(AdaptadorBase):
         max_imgs = 0
         mejor_dir = self.ruta_origen
         for root, dirs, files in os.walk(self.ruta_origen):
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
             count = sum(1 for f in files if f.lower().endswith(EXTENSIONES_VALIDAS))
             if count > max_imgs:
                 max_imgs = count
@@ -290,7 +360,7 @@ class AdaptadorMatGeneral(AdaptadorBase):
 
             for f in archivos_mat:
                 fname = f.name.lower()
-                if 'imagelabels' in fname or 'labels' in fname or 'cls' in fname or 'category' in fname or 'target' in fname:
+                if any(k in fname for k in ('imagelabels', 'labels', 'cls', 'category', 'target')):
                     mat_labels_file = f
                 elif 'setid' in fname or 'split' in fname:
                     mat_setid_file = f
@@ -321,11 +391,14 @@ class AdaptadorMatGeneral(AdaptadorBase):
                 data_s = io.loadmat(str(mat_setid_file))
                 setids = {}
                 for k_tr in ['trnid', 'train', 'tr']:
-                    if k_tr in data_s: setids['tr'] = data_s[k_tr].flatten()
+                    if k_tr in data_s:
+                        setids['tr'] = set(int(x) for x in data_s[k_tr].flatten())
                 for k_val in ['valid', 'val', 'v']:
-                    if k_val in data_s: setids['val'] = data_s[k_val].flatten()
+                    if k_val in data_s:
+                        setids['val'] = set(int(x) for x in data_s[k_val].flatten())
                 for k_tst in ['tstid', 'test', 'tst', 'ts']:
-                    if k_tst in data_s: setids['tst'] = data_s[k_tst].flatten()
+                    if k_tst in data_s:
+                        setids['tst'] = set(int(x) for x in data_s[k_tst].flatten())
 
         except Exception as e:
             print(f"[MatAdapter] Error procesando archivos .mat: {e}")
@@ -338,15 +411,21 @@ class AdaptadorMatGeneral(AdaptadorBase):
         dir_img, lista_imgs = self._obtener_lista_imagenes_ordenada()
 
         if labels is not None:
+            tr_set = setids.get("tr", set()) if setids else set()
+            val_set = setids.get("val", set()) if setids else set()
+            tst_set = setids.get("tst", set()) if setids else set()
+
             for idx, label_id in enumerate(labels, start=1):
                 part = "train"
                 if setids:
-                    if idx in setids.get("tr", []): part = "train"
-                    elif idx in setids.get("val", []): part = "val"
-                    elif idx in setids.get("tst", []): part = "test"
+                    if idx in tr_set:
+                        part = "train"
+                    elif idx in val_set:
+                        part = "val"
+                    elif idx in tst_set:
+                        part = "test"
 
                 c_name = f"clase_{int(label_id):03d}"
-
                 img_name_oxford = f"image_{idx:05d}.jpg"
                 img_path = dir_img / img_name_oxford
 
@@ -362,7 +441,7 @@ class AdaptadorMatGeneral(AdaptadorBase):
         return resumen
 
     def preparar(self):
-        resumen = self.analizar()
+        resumen = {"train": {}, "val": {}, "test": {}, "total_por_clase": {}, "invalidas": 0, "formato": "Caso D: Metadatos en .MAT"}
         labels, setids = self._leer_mat_labels_y_setid()
         dir_img, lista_imgs = self._obtener_lista_imagenes_ordenada()
 
@@ -370,15 +449,21 @@ class AdaptadorMatGeneral(AdaptadorBase):
             shutil.rmtree(self.ruta_destino)
 
         if labels is not None:
+            tr_set = setids.get("tr", set()) if setids else set()
+            val_set = setids.get("val", set()) if setids else set()
+            tst_set = setids.get("tst", set()) if setids else set()
+
             for idx, label_id in enumerate(labels, start=1):
                 part = "train"
                 if setids:
-                    if idx in setids.get("tr", []): part = "train"
-                    elif idx in setids.get("val", []): part = "val"
-                    elif idx in setids.get("tst", []): part = "test"
+                    if idx in tr_set:
+                        part = "train"
+                    elif idx in val_set:
+                        part = "val"
+                    elif idx in tst_set:
+                        part = "test"
 
                 c_name = f"clase_{int(label_id):03d}"
-
                 img_name_oxford = f"image_{idx:05d}.jpg"
                 src_path = dir_img / img_name_oxford
 
@@ -389,6 +474,10 @@ class AdaptadorMatGeneral(AdaptadorBase):
                     dest_dir = self.ruta_destino / part / c_name
                     dest_dir.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src_path, dest_dir / src_path.name)
+                    resumen[part][c_name] = resumen[part].get(c_name, 0) + 1
+                    resumen["total_por_clase"][c_name] = resumen["total_por_clase"].get(c_name, 0) + 1
+                else:
+                    resumen["invalidas"] += 1
 
         return str(self.ruta_destino), resumen
 
@@ -396,7 +485,6 @@ class AdaptadorMatGeneral(AdaptadorBase):
 class GestorPreparacionDataset:
     """
     Analizador y Gestor principal de Adaptación de Datasets para GANIA 2.0.
-    Prioriza adaptadores con metadatos (.mat, CSV/JSON) sobre carpetas por defecto.
     """
     def __init__(self, ruta_origen, ruta_destino="./datos/datasets/dataset_prepared"):
         self.ruta_origen = Path(ruta_origen)
@@ -415,9 +503,6 @@ class GestorPreparacionDataset:
         return AdaptadorEstructuraCarpeta(self.ruta_origen, self.ruta_destino)
 
     def analizar_y_preparar(self):
-        """
-        Ejecuta la detección del formato, análisis de clases/particiones y estandarización.
-        """
         adaptador = self.seleccionar_adaptador()
         print(f"[GestorPreparacion] Adaptador seleccionado: {adaptador.__class__.__name__}")
         ruta_preparada, resumen = adaptador.preparar()

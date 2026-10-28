@@ -1,28 +1,72 @@
 # interfaces/panel_entrenamiento.py
 import os
 import math
+import torch
 from PyQt5.QtWidgets import (QGroupBox, QVBoxLayout, QHBoxLayout, QLabel,
                               QComboBox, QPushButton, QDoubleSpinBox, QCheckBox,
-                              QProgressBar, QSpinBox, QFileDialog, QLineEdit, QMessageBox)
-from PyQt5.QtCore import pyqtSignal, Qt, QUrl
+                              QProgressBar, QSpinBox, QFileDialog, QLineEdit,
+                              QMessageBox, QSizePolicy)
+import time
+from PyQt5.QtCore import pyqtSignal, Qt, QUrl, QThread
 from PyQt5.QtGui import QDesktopServices
 import qtawesome as qta
 
+from interfaces.controles_personalizados import NotaIcono
 from utils.gestor_logs import obtener_logger
-from utils.dispositivo import detectar_gpu, obtener_dispositivo
+from utils.dispositivo import detectar_gpu
 from utils.cargador_datos import (extraer_zip_dataset, descargar_extraer_url,
                                   preparar_y_analizar_dataset, obtener_clases_disponibles)
 
 logger = obtener_logger("UI.Entrenamiento")
+
 
 def icono_blanco(nombre):
     """Crea un icono de QtAwesome en color blanco puro constante para todos los estados."""
     return qta.icon(nombre, color="white", color_active="white", color_disabled="white")
 
 
+def _ajustar_combo(combo):
+    """Evita que textos largos en un QComboBox ensanchen el panel o generen scroll horizontal."""
+    combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(10)
+    combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+
+class WorkerCargaDataset(QThread):
+    """
+    Hilo en segundo plano para descomprimir, descargar y analizar datasets
+    sin congelar ni bloquear la interfaz gráfica principal.
+    """
+    progreso_estado = pyqtSignal(str)
+    completado = pyqtSignal(str, str, dict)  # (ruta_resuelta, ruta_preparada, resumen)
+    error = pyqtSignal(str)
+
+    def __init__(self, modo, origen):
+        super().__init__()
+        self.modo = modo      # 'carpeta' | 'zip' | 'url'
+        self.origen = origen
+
+    def run(self):
+        try:
+            if self.modo == 'zip':
+                self.progreso_estado.emit("Extrayendo archivo comprimido en segundo plano...")
+                ruta_resuelta = extraer_zip_dataset(self.origen)
+            elif self.modo == 'url':
+                self.progreso_estado.emit("Descargando y descomprimiendo dataset...")
+                ruta_resuelta = descargar_extraer_url(self.origen, callback_log=lambda m: logger.info(m))
+            else:
+                ruta_resuelta = self.origen
+
+            self.progreso_estado.emit("Analizando clases e imágenes del dataset...")
+            ruta_preparada, resumen = preparar_y_analizar_dataset(ruta_resuelta)
+            self.completado.emit(ruta_resuelta, ruta_preparada, resumen)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class PanelConfiguracionDataset(QGroupBox):
     def __init__(self):
-        super().__init__("1. Dataset & Selección de Clase")
+        super().__init__("1. Dataset y Selección de Clase")
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
@@ -30,6 +74,7 @@ class PanelConfiguracionDataset(QGroupBox):
         self.ruta_dataset_preparada = None
         self.clases_detectadas = {}
         self.resumen_preparacion = {}
+        self.worker_carga = None
 
         # 1. Selector de Método de Carga
         layout.addWidget(QLabel("Método de Carga de Dataset:"))
@@ -40,10 +85,11 @@ class PanelConfiguracionDataset(QGroupBox):
             "Descargar desde URL / GitHub"
         ])
         self.selector_origen.setFixedHeight(35)
+        _ajustar_combo(self.selector_origen)
         layout.addWidget(self.selector_origen)
 
         # Controles según el origen
-        self.btn_carpeta_local = QPushButton(" Seleccionar Carpeta del Dataset")
+        self.btn_carpeta_local = QPushButton(" Seleccionar Carpeta")
         self.btn_carpeta_local.setIcon(icono_blanco("fa5s.folder-open"))
         self.btn_carpeta_local.clicked.connect(self._seleccionar_carpeta)
         layout.addWidget(self.btn_carpeta_local)
@@ -60,7 +106,7 @@ class PanelConfiguracionDataset(QGroupBox):
         self.input_url.setPlaceholderText("https://www.robots.ox.ac.uk/~vgg/data/flowers/17/17flowers.tgz")
         layout_url.addWidget(self.input_url)
 
-        self.btn_descargar_url = QPushButton(" Descargar & Extraer")
+        self.btn_descargar_url = QPushButton(" Descargar y Extraer")
         self.btn_descargar_url.setIcon(icono_blanco("fa5s.download"))
         self.btn_descargar_url.clicked.connect(self._descargar_url)
         layout_url.addWidget(self.btn_descargar_url)
@@ -70,13 +116,18 @@ class PanelConfiguracionDataset(QGroupBox):
         # 2. Resumen de Preparación de Dataset
         self.lbl_resumen_preparacion = QLabel("Formato: Pendiente de análisis")
         self.lbl_resumen_preparacion.setWordWrap(True)
-        self.lbl_resumen_preparacion.setStyleSheet("font-size: 11px; color: #60A5FA; background: rgba(59, 130, 246, 0.1); padding: 8px; border-radius: 8px;")
+        self.lbl_resumen_preparacion.setStyleSheet(
+            "font-size: 11px; color: #60A5FA; background: rgba(59, 130, 246, 0.1); "
+            "padding: 8px; border-radius: 8px;"
+        )
         layout.addWidget(self.lbl_resumen_preparacion)
 
         # 3. Selector de Clase para FastGAN
-        layout.addWidget(QLabel("Clases Detectadas (Selecciona una para FastGAN):"))
+        layout.addWidget(QLabel("Clases Detectadas (Selecciona una):"))
         self.selector_clase = QComboBox()
         self.selector_clase.setFixedHeight(35)
+        _ajustar_combo(self.selector_clase)
+        self.selector_clase.currentIndexChanged.connect(self._notificar_cambio)
         layout.addWidget(self.selector_clase)
 
         # Estado de la Ruta
@@ -93,52 +144,66 @@ class PanelConfiguracionDataset(QGroupBox):
         self.btn_zip_local.setVisible(texto == "Archivo Comprimido (ZIP/TGZ)")
         self.container_url.setVisible(texto == "Descargar desde URL / GitHub")
 
+    def _set_controles_carga_habilitados(self, habilitado):
+        self.btn_carpeta_local.setEnabled(habilitado)
+        self.btn_zip_local.setEnabled(habilitado)
+        self.btn_descargar_url.setEnabled(habilitado)
+        self.selector_origen.setEnabled(habilitado)
+        self.selector_clase.setEnabled(habilitado)
+
+    def _iniciar_worker_carga(self, modo, origen):
+        if self.worker_carga is not None and self.worker_carga.isRunning():
+            return
+        self._set_controles_carga_habilitados(False)
+        self.lbl_resumen_preparacion.setText("Procesando dataset en segundo plano...")
+        self.worker_carga = WorkerCargaDataset(modo, origen)
+        self.worker_carga.progreso_estado.connect(self.lbl_ruta_estado.setText)
+        self.worker_carga.completado.connect(self._on_carga_completada)
+        self.worker_carga.error.connect(self._on_carga_error)
+        self.worker_carga.start()
+
+    def _on_carga_completada(self, ruta_resuelta, ruta_preparada, resumen):
+        self._set_controles_carga_habilitados(True)
+        self.ruta_dataset_resuelta = ruta_resuelta
+        self.ruta_dataset_preparada = ruta_preparada
+        self.resumen_preparacion = resumen
+        self.lbl_ruta_estado.setText(f"Carpeta: ...{ruta_resuelta[-35:]}")
+        self._mostrar_resumen_preparacion()
+
+    def _on_carga_error(self, msj_error):
+        self._set_controles_carga_habilitados(True)
+        self.lbl_ruta_estado.setText("Estado: Error al cargar dataset")
+        self.lbl_resumen_preparacion.setText("Formato: Error en el análisis")
+        QMessageBox.critical(self, "Error al Cargar Dataset", f"No se pudo procesar el dataset:\n{msj_error}")
+
     def _seleccionar_carpeta(self):
         ruta = QFileDialog.getExistingDirectory(self, "Seleccionar Carpeta del Dataset")
         if ruta:
-            self.ruta_dataset_resuelta = ruta
-            self.lbl_ruta_estado.setText(f"Carpeta: ...{ruta[-35:]}")
-            self.procesar_y_analizar_dataset()
+            self._iniciar_worker_carga('carpeta', ruta)
 
     def _seleccionar_zip(self):
-        ruta_zip, _ = QFileDialog.getOpenFileName(self, "Seleccionar Dataset Comprimido", "", "Archivos Comprimidos (*.zip *.tgz *.tar.gz *.tar)")
+        ruta_zip, _ = QFileDialog.getOpenFileName(
+            self, "Seleccionar Dataset Comprimido", "",
+            "Archivos Comprimidos (*.zip *.tgz *.tar.gz *.tar)"
+        )
         if ruta_zip:
-            try:
-                ruta_extraida = extraer_zip_dataset(ruta_zip)
-                self.ruta_dataset_resuelta = ruta_extraida
-                self.lbl_ruta_estado.setText(f"Extraído en: ...{ruta_extraida[-30:]}")
-                QMessageBox.information(self, "Descompresión Exitosa", f"Dataset descompuesto correctamente en:\n{ruta_extraida}")
-                self.procesar_y_analizar_dataset()
-            except Exception as e:
-                QMessageBox.critical(self, "Error al Descomprimir", f"No se pudo descomprimir el archivo:\n{e}")
+            self._iniciar_worker_carga('zip', ruta_zip)
 
     def _descargar_url(self):
         url = self.input_url.text().strip()
         if not url.startswith("http"):
-            QMessageBox.warning(self, "URL Inválida", "Ingresa una URL válida que empiece con http:// o https://")
+            QMessageBox.warning(self, "URL Inválida", "Ingresa una URL válida que comience con http:// o https://")
             return
-
-        try:
-            self.btn_descargar_url.setEnabled(False)
-            self.lbl_ruta_estado.setText("Descargando y descomprimiendo dataset...")
-            ruta_descargada = descargar_extraer_url(url, callback_log=lambda m: logger.info(m))
-            self.ruta_dataset_resuelta = ruta_descargada
-            self.lbl_ruta_estado.setText(f"URL Extraída en: ...{ruta_descargada[-30:]}")
-            QMessageBox.information(self, "Descarga Completada", f"Dataset descargado y listo en:\n{ruta_descargada}")
-            self.procesar_y_analizar_dataset()
-        except Exception as e:
-            QMessageBox.critical(self, "Error Descarga", f"No se pudo descargar o descomprimir el dataset:\n{e}")
-        finally:
-            self.btn_descargar_url.setEnabled(True)
+        self._iniciar_worker_carga('url', url)
 
     def procesar_y_analizar_dataset(self):
-        """Ejecuta el módulo universal de preparación y actualiza la UI."""
+        """Método síncrono de compatibilidad para llamadas directas."""
         if not self.ruta_dataset_resuelta or not os.path.exists(self.ruta_dataset_resuelta):
             return
-
         self.ruta_dataset_preparada, self.resumen_preparacion = preparar_y_analizar_dataset(self.ruta_dataset_resuelta)
+        self._mostrar_resumen_preparacion()
 
-        # Formatear Resumen Visual
+    def _mostrar_resumen_preparacion(self):
         fmt = self.resumen_preparacion.get("formato", "Desconocido")
         train_map = self.resumen_preparacion.get("train", {})
         val_map = self.resumen_preparacion.get("val", {})
@@ -153,11 +218,10 @@ class PanelConfiguracionDataset(QGroupBox):
         txt_resumen = (
             f"<b>Estructura:</b> {fmt}<br>"
             f"<b>Clases Totales:</b> {n_clases} | <b>Imágenes Válidas:</b> {n_train + n_val + n_test}<br>"
-            f"• Train: {n_train} | Val: {n_val} | Test: {n_test}<br>"
-            f"• Archivos inválidos/omitidos: {inv}"
+            f"- Train: {n_train} | Val: {n_val} | Test: {n_test}<br>"
+            f"- Archivos inválidos/omitidos: {inv}"
         )
         self.lbl_resumen_preparacion.setText(txt_resumen)
-
         self.actualizar_clases_detectadas()
 
     def actualizar_clases_detectadas(self):
@@ -209,16 +273,47 @@ class PanelControlFastGAN(QGroupBox):
     senal_iniciar_fastgan = pyqtSignal()
     senal_detener_fastgan = pyqtSignal()
 
-    # Aliases de señales para retrocompatibilidad
-    senal_iniciar_dcgan = senal_iniciar_fastgan
-    senal_detener_dcgan = senal_detener_fastgan
-
     def __init__(self):
         super().__init__("2. Entrenamiento FastGAN por Clase (ICLR 2021)")
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
-        # Learning Rate
+        # 1. Fila compacta: Aceleración GPU + Chip de estado a la derecha
+        self.info_gpu = detectar_gpu()
+        es_gpu = self.info_gpu["disponible"]
+
+        fila_hw = QHBoxLayout()
+        fila_hw.setSpacing(8)
+        self.chk_cuda = QCheckBox("Usar GPU (CUDA)")
+        self.chk_cuda.setChecked(es_gpu)
+        self.chk_cuda.setEnabled(es_gpu)
+        self.chk_cuda.setToolTip(self.info_gpu["detalle"])
+        self.chk_cuda.toggled.connect(self._al_cambiar_dispositivo_o_resolucion)
+
+        self.lbl_dispositivo = NotaIcono(compacta=True, tam_icono=11)
+        self.lbl_dispositivo.setToolTip(f"{self.info_gpu['mensaje']}\n{self.info_gpu['detalle']}")
+
+        fila_hw.addWidget(self.chk_cuda)
+        fila_hw.addStretch()
+        fila_hw.addWidget(self.lbl_dispositivo)
+        layout.addLayout(fila_hw)
+
+        # 2. Selector de Resolución limpio + nota breve contextual
+        layout.addWidget(QLabel("Resolución de salida"))
+        self.combo_resolucion = QComboBox()
+        self.combo_resolucion.addItem("64 x 64 px  -  Rápida (CPU)", userData=64)
+        self.combo_resolucion.addItem("128 x 128 px  -  Media (GPU)", userData=128)
+        self.combo_resolucion.addItem("256 x 256 px  -  Alta (GPU)", userData=256)
+        self.combo_resolucion.setCurrentIndex(1 if es_gpu else 0)
+        self.combo_resolucion.setFixedHeight(35)
+        _ajustar_combo(self.combo_resolucion)
+        self.combo_resolucion.currentIndexChanged.connect(self._al_cambiar_dispositivo_o_resolucion)
+        layout.addWidget(self.combo_resolucion)
+
+        self.lbl_aviso_resolucion = NotaIcono()
+        layout.addWidget(self.lbl_aviso_resolucion)
+
+        # 3. Tasa de Aprendizaje (LR)
         layout.addWidget(QLabel("Tasa de Aprendizaje (LR)"))
         self.spin_lr = QDoubleSpinBox()
         self.spin_lr.setDecimals(6)
@@ -227,85 +322,105 @@ class PanelControlFastGAN(QGroupBox):
         self.spin_lr.setFixedHeight(35)
         layout.addWidget(self.spin_lr)
 
-        # Batch Size
-        layout.addWidget(QLabel("Tamaño de Lote (Batch Size)"))
-        self.spin_batch = QSpinBox()
-        self.spin_batch.setRange(8, 256)
-        self.spin_batch.setValue(32)
-        self.spin_batch.setFixedHeight(35)
-        layout.addWidget(self.spin_batch)
+        # 4. Lote y Épocas en 2 columnas simétricas
+        fila_params = QHBoxLayout()
+        fila_params.setSpacing(10)
 
-        # Épocas
-        layout.addWidget(QLabel("Épocas de Entrenamiento"))
+        col_batch = QVBoxLayout()
+        col_batch.setSpacing(4)
+        col_batch.addWidget(QLabel("Tamaño de Lote"))
+        self.spin_batch = QSpinBox()
+        self.spin_batch.setRange(4, 256)
+        self.spin_batch.setValue(32 if es_gpu else 8)
+        self.spin_batch.setFixedHeight(35)
+        self.spin_batch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        col_batch.addWidget(self.spin_batch)
+
+        col_epocas = QVBoxLayout()
+        col_epocas.setSpacing(4)
+        col_epocas.addWidget(QLabel("Épocas"))
         self.spin_epocas = QSpinBox()
-        self.spin_epocas.setRange(1, 500)
+        self.spin_epocas.setRange(1, 100000)
+        self.spin_epocas.setSingleStep(50)
         self.spin_epocas.setValue(25)
         self.spin_epocas.setFixedHeight(35)
-        layout.addWidget(self.spin_epocas)
+        self.spin_epocas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        col_epocas.addWidget(self.spin_epocas)
 
-        # Dispositivo de entrenamiento (GPU NVIDIA / CPU)
-        self.chk_cuda = QCheckBox("Entrenar con GPU (CUDA)")
-        self.lbl_estado_gpu = QLabel()
-        self.lbl_estado_gpu.setWordWrap(True)
-        layout.addWidget(self.chk_cuda)
-        layout.addWidget(self.lbl_estado_gpu)
-        self._configurar_gpu()
+        fila_params.addLayout(col_batch, 1)
+        fila_params.addLayout(col_epocas, 1)
+        layout.addLayout(fila_params)
 
-        # Progreso
+        # 5. Progreso
         self.barra_progreso = QProgressBar()
-        self.barra_progreso.setFixedHeight(20)
+        self.barra_progreso.setFixedHeight(18)
         self.barra_progreso.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.barra_progreso)
 
-        # Botones
+        # 6. Botones de Acción (Simetría 1:1 exacta)
         btn_layout = QHBoxLayout()
-        self.btn_iniciar = QPushButton(" Entrenar FastGAN")
+        btn_layout.setSpacing(10)
+        self.btn_iniciar = QPushButton(" Entrenar")
         self.btn_iniciar.setIcon(icono_blanco("fa5s.play"))
         self.btn_iniciar.setFixedHeight(40)
+        self.btn_iniciar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btn_iniciar.clicked.connect(lambda: self.senal_iniciar_fastgan.emit())
 
         self.btn_detener = QPushButton(" Detener")
         self.btn_detener.setIcon(icono_blanco("fa5s.stop"))
         self.btn_detener.setFixedHeight(40)
+        self.btn_detener.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btn_detener.setEnabled(False)
         self.btn_detener.clicked.connect(lambda: self.senal_detener_fastgan.emit())
 
-        btn_layout.addWidget(self.btn_iniciar)
-        btn_layout.addWidget(self.btn_detener)
+        btn_layout.addWidget(self.btn_iniciar, 1)
+        btn_layout.addWidget(self.btn_detener, 1)
         layout.addLayout(btn_layout)
 
-    def _configurar_gpu(self):
-        """Detecta CUDA: si hay GPU usable se activa la casilla; si no, queda desactivada."""
-        info = detectar_gpu()
-        self._gpu_disponible = info["disponible"]
+        self._al_cambiar_dispositivo_o_resolucion()
 
-        self.chk_cuda.setEnabled(self._gpu_disponible)
-        self.chk_cuda.setChecked(self._gpu_disponible)
-        self.chk_cuda.setToolTip(info["detalle"])
-        self.lbl_estado_gpu.setToolTip(info["detalle"])
+    def usar_gpu(self):
+        return bool(self.info_gpu.get("disponible") and self.chk_cuda.isChecked())
 
-        if self._gpu_disponible:
-            icono, color, fondo = "✔", "#10B981", "rgba(16, 185, 129, 0.12)"
-        elif info["nombre"]:
-            icono, color, fondo = "⚠", "#F59E0B", "rgba(245, 158, 11, 0.12)"   # GPU sin PyTorch-CUDA
+    def obtener_resolucion(self):
+        val = self.combo_resolucion.currentData()
+        return int(val) if val else 64
+
+    def _al_cambiar_dispositivo_o_resolucion(self):
+        gpu_disp = self.info_gpu.get("disponible", False)
+        usando_gpu = self.usar_gpu()
+        res = self.obtener_resolucion()
+
+        # 1. Chip compacto de estado de GPU / CPU
+        if gpu_disp and usando_gpu:
+            nombre_corto = (self.info_gpu.get("nombre") or "GPU").replace("NVIDIA GeForce ", "").replace("NVIDIA ", "")
+            self.lbl_dispositivo.establecer("fa5s.microchip", nombre_corto, color="#059669",
+                                            fondo="rgba(16, 185, 129, 0.14)", negrita=True)
+        elif gpu_disp and not usando_gpu:
+            self.lbl_dispositivo.establecer("fa5s.power-off", "GPU desactivada", color="#D97706",
+                                            fondo="rgba(245, 158, 11, 0.14)")
         else:
-            icono, color, fondo = "✖", "#EF4444", "rgba(239, 68, 68, 0.12)"
-        self.lbl_estado_gpu.setText(f"{icono} {info['mensaje']}")
-        self.lbl_estado_gpu.setStyleSheet(
-            f"font-size: 11px; color: {color}; background: {fondo}; padding: 6px; border-radius: 6px;"
-        )
-        logger.info(f"[GPU] {info['mensaje']} | {info['detalle']}")
+            self.lbl_dispositivo.establecer("fa5s.desktop", "Modo CPU", color="#64748B",
+                                            fondo="rgba(100, 116, 139, 0.12)")
 
-    def obtener_dispositivo(self):
-        """torch.device a usar según la casilla (CUDA solo si está disponible y marcada)."""
-        return obtener_dispositivo(usar_gpu=self.chk_cuda.isChecked())
+        # 2. Nota breve bajo el selector de resolución
+        if usando_gpu:
+            self.lbl_aviso_resolucion.establecer("fa5s.bolt", f"Aceleración GPU activa para {res}x{res} px.",
+                                                 color="#059669")
+        elif res == 64:
+            self.lbl_aviso_resolucion.establecer("fa5s.info-circle", "Ligera para CPU. Menor nitidez al ampliar.",
+                                                 color="#64748B")
+        elif res == 128:
+            self.lbl_aviso_resolucion.establecer("fa5s.exclamation-triangle",
+                                                 "En CPU tarda ~4x más por época. Recomendado: GPU o Colab.",
+                                                 color="#D97706", fondo="rgba(245, 158, 11, 0.12)")
+        else:
+            self.lbl_aviso_resolucion.establecer("fa5s.exclamation-circle",
+                                                 "En CPU tarda ~16x más y consume mucha RAM. Usa GPU o Colab.",
+                                                 color="#DC2626", fondo="rgba(239, 68, 68, 0.12)")
 
-    def set_entrenando(self, entrenando):
-        """Bloquea el cambio de dispositivo mientras hay un entrenamiento en curso."""
-        self.chk_cuda.setEnabled(self._gpu_disponible and not entrenando)
 
-
-# Alias para retrocompatibilidad
+# Alias de retrocompatibilidad
 PanelControlDCGAN = PanelControlFastGAN
 
 
@@ -323,8 +438,9 @@ class PanelAumentoDataset(QGroupBox):
         self.ruta_ampliado = "./datos/datasets/augmented"
 
         # Estado del Modelo Entrenado
-        self.lbl_estado_modelo = QLabel("Modelo FastGAN: No entrenado")
-        self.lbl_estado_modelo.setStyleSheet("font-weight: bold; color: #EF4444; font-size: 12px;")
+        self.lbl_estado_modelo = NotaIcono(tam_icono=14)
+        self.lbl_estado_modelo.establecer("fa5s.times-circle", "Modelo FastGAN: No entrenado",
+                                          color="#EF4444", negrita=True, tam_fuente=12)
         layout.addWidget(self.lbl_estado_modelo)
 
         # 1. Conteo Original
@@ -339,6 +455,7 @@ class PanelAumentoDataset(QGroupBox):
         self.combo_porcentaje.addItems(["10%", "25%", "50%", "75%", "100%", "200%"])
         self.combo_porcentaje.setCurrentText("25%")
         self.combo_porcentaje.setFixedHeight(35)
+        _ajustar_combo(self.combo_porcentaje)
         self.combo_porcentaje.currentTextChanged.connect(self._recalcular_sinteticas)
         layout.addWidget(self.combo_porcentaje)
 
@@ -349,8 +466,28 @@ class PanelAumentoDataset(QGroupBox):
         self.lbl_cant_sintetica.setStyleSheet("font-size: 14px; font-weight: bold; color: #10B981;")
         layout.addWidget(self.lbl_cant_sintetica)
 
+        # 4. Barra de Progreso de Generación Sintética
+        layout.addWidget(QLabel("Progreso de Generación Sintética:"))
+        self.barra_progreso_aumento = QProgressBar()
+        self.barra_progreso_aumento.setFixedHeight(22)
+        self.barra_progreso_aumento.setAlignment(Qt.AlignCenter)
+        self.barra_progreso_aumento.setValue(0)
+        layout.addWidget(self.barra_progreso_aumento)
+
+        # Fase actual y tiempo restante estimado
+        fila_estado = QHBoxLayout()
+        fila_estado.setSpacing(8)
+        self.lbl_fase_aumento = NotaIcono(compacta=True, tam_icono=11)
+        self.lbl_fase_aumento.establecer("fa5s.hourglass-start", "En espera", color="#94A3B8")
+        self.lbl_tiempo_aumento = NotaIcono(compacta=True, tam_icono=11)
+        self.lbl_tiempo_aumento.setVisible(False)
+        fila_estado.addWidget(self.lbl_fase_aumento, 1)
+        fila_estado.addWidget(self.lbl_tiempo_aumento, 0)
+        layout.addLayout(fila_estado)
+        self._t_inicio_aumento = None
+
         # Botón de Generación sin Reentrenamiento
-        self.btn_generar_aumento = QPushButton(" Generar Imágenes Sintéticas")
+        self.btn_generar_aumento = QPushButton(" Generar Sintéticas")
         self.btn_generar_aumento.setIcon(icono_blanco("fa5s.magic"))
         self.btn_generar_aumento.setFixedHeight(42)
         self.btn_generar_aumento.setEnabled(False)
@@ -358,7 +495,7 @@ class PanelAumentoDataset(QGroupBox):
         layout.addWidget(self.btn_generar_aumento)
 
         # Botones de Explorador de Archivos
-        self.btn_abrir_sinteticas = QPushButton("Abrir Carpeta de Sintéticas")
+        self.btn_abrir_sinteticas = QPushButton("Abrir Carpeta Sintéticas")
         self.btn_abrir_sinteticas.setIcon(icono_blanco("fa5s.folder-open"))
         self.btn_abrir_sinteticas.setFixedHeight(36)
         self.btn_abrir_sinteticas.clicked.connect(self._abrir_folder_sinteticas)
@@ -370,6 +507,45 @@ class PanelAumentoDataset(QGroupBox):
         self.btn_abrir_ampliado.clicked.connect(self._abrir_folder_ampliado)
         layout.addWidget(self.btn_abrir_ampliado)
 
+    @staticmethod
+    def _formatear_tiempo(segundos):
+        segundos = max(0, int(round(segundos)))
+        m, s = divmod(segundos, 60)
+        return f"{m}:{s:02d} min" if m else f"{s} s"
+
+    def iniciar_progreso_aumento(self):
+        self._t_inicio_aumento = time.time()
+        self.barra_progreso_aumento.setValue(0)
+        self.lbl_fase_aumento.establecer("fa5s.hourglass-start", "Preparando...", color="#3B82F6")
+        self.lbl_tiempo_aumento.establecer("fa5s.clock", "Calculando...", color="#64748B")
+        self.lbl_tiempo_aumento.setVisible(True)
+
+    def actualizar_progreso_aumento(self, porcentaje, fase=""):
+        """Recibe el porcentaje global real (0-100) y la fase actual; estima el tiempo restante."""
+        porcentaje = int(max(0, min(100, porcentaje)))
+        self.barra_progreso_aumento.setValue(porcentaje)
+        if fase:
+            self.lbl_fase_aumento.establecer("fa5s.hourglass-half", fase, color="#3B82F6")
+
+        if self._t_inicio_aumento is not None and porcentaje >= 3:
+            transcurrido = time.time() - self._t_inicio_aumento
+            restante = transcurrido * (100 - porcentaje) / porcentaje
+            self.lbl_tiempo_aumento.establecer("fa5s.clock", f"Restante: ~{self._formatear_tiempo(restante)}",
+                                               color="#64748B")
+
+    def finalizar_progreso_aumento(self, exito=True):
+        self.barra_progreso_aumento.setValue(100 if exito else self.barra_progreso_aumento.value())
+        total = time.time() - self._t_inicio_aumento if self._t_inicio_aumento else 0
+        if exito:
+            self.lbl_fase_aumento.establecer("fa5s.check-circle", "Completado", color="#10B981", negrita=True)
+            self.lbl_tiempo_aumento.establecer("fa5s.stopwatch", f"Total: {self._formatear_tiempo(total)}",
+                                               color="#10B981")
+        else:
+            self.lbl_fase_aumento.establecer("fa5s.times-circle", "Error en la generación", color="#EF4444",
+                                             negrita=True)
+            self.lbl_tiempo_aumento.setVisible(False)
+        self._t_inicio_aumento = None
+
     def actualizar_conteo_original(self, cantidad):
         self.cant_original = max(0, cantidad)
         self.lbl_cant_original.setText(f"{self.cant_original} imágenes")
@@ -377,12 +553,12 @@ class PanelAumentoDataset(QGroupBox):
 
     def set_estado_modelo_listo(self, listo=True):
         if listo:
-            self.lbl_estado_modelo.setText("Modelo FastGAN: Entrenado y listo ✓")
-            self.lbl_estado_modelo.setStyleSheet("font-weight: bold; color: #10B981; font-size: 12px;")
+            self.lbl_estado_modelo.establecer("fa5s.check-circle", "Modelo FastGAN: Entrenado y listo",
+                                              color="#10B981", negrita=True, tam_fuente=12)
             self.btn_generar_aumento.setEnabled(True)
         else:
-            self.lbl_estado_modelo.setText("Modelo FastGAN: No entrenado")
-            self.lbl_estado_modelo.setStyleSheet("font-weight: bold; color: #EF4444; font-size: 12px;")
+            self.lbl_estado_modelo.establecer("fa5s.times-circle", "Modelo FastGAN: No entrenado",
+                                              color="#EF4444", negrita=True, tam_fuente=12)
             self.btn_generar_aumento.setEnabled(False)
 
     def _recalcular_sinteticas(self):
@@ -404,6 +580,7 @@ class PanelAumentoDataset(QGroupBox):
         if self.cant_sintetica_calculada <= 0:
             QMessageBox.warning(self, "Aumento Nulo", "La cantidad de imágenes sintéticas a generar debe ser mayor a 0.")
             return
+        self.iniciar_progreso_aumento()
         self.senal_generar_aumento.emit(self.cant_sintetica_calculada)
 
     def _abrir_folder_sinteticas(self):
@@ -413,40 +590,3 @@ class PanelAumentoDataset(QGroupBox):
     def _abrir_folder_ampliado(self):
         os.makedirs(self.ruta_ampliado, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(self.ruta_ampliado)))
-
-
-class PanelControlClasificador(QGroupBox):
-    """Panel de Clasificación (Oculto temporalmente)."""
-    senal_iniciar_clasificacion = pyqtSignal(str, int, float)
-
-    def __init__(self):
-        super().__init__("4. Clasificación Comparativa")
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-
-        layout.addWidget(QLabel("Arquitectura del Clasificador:"))
-        self.selector_modelo = QComboBox()
-        self.selector_modelo.addItems(["ResNet18", "CNN_Simple"])
-        self.selector_modelo.setFixedHeight(35)
-        layout.addWidget(self.selector_modelo)
-
-        layout.addWidget(QLabel("Épocas Clasificador:"))
-        self.spin_epocas_clf = QSpinBox()
-        self.spin_epocas_clf.setRange(1, 100)
-        self.spin_epocas_clf.setValue(10)
-        self.spin_epocas_clf.setFixedHeight(35)
-        layout.addWidget(self.spin_epocas_clf)
-
-        self.btn_clasificar = QPushButton(" Evaluar Clasificación")
-        self.btn_clasificar.setIcon(icono_blanco("fa5s.chart-line"))
-        self.btn_clasificar.setFixedHeight(45)
-        self.btn_clasificar.setEnabled(False)
-        self.btn_clasificar.clicked.connect(self._al_clasificar)
-        layout.addWidget(self.btn_clasificar)
-
-    def _al_clasificar(self):
-        self.senal_iniciar_clasificacion.emit(
-            self.selector_modelo.currentText(),
-            self.spin_epocas_clf.value(),
-            0.001
-        )

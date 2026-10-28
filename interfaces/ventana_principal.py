@@ -15,9 +15,9 @@ import qtawesome as qta
 from interfaces.estilos import ESTILO_OSCURO, ESTILO_CLARO
 from interfaces.controles_personalizados import ToggleTemaNeumorfico
 from interfaces.panel_entrenamiento import (PanelConfiguracionDataset, PanelControlFastGAN, PanelControlDCGAN,
-                                         PanelAumentoDataset, PanelControlClasificador)
-from interfaces.panel_resultados import (PanelVisualizacion, PanelEstadisticasFastGAN, PanelEstadisticasDCGAN,
-                                         PanelEvaluacionClasificacion)
+                                         PanelAumentoDataset)
+from interfaces.panel_resultados import (PanelVisualizacion, PanelGaleriaSinteticas,
+                                         PanelEstadisticasFastGAN, PanelEstadisticasDCGAN)
 from interfaces.pantalla_login import PantallaLogin
 from interfaces.pantalla_bienvenida import PantallaBienvenida
 
@@ -25,9 +25,10 @@ from utils.gestor_configuracion import cargar_config_usuario, guardar_config_usu
 from utils.gestor_logs import configurar_logging, obtener_logger
 from utils.gestor_resultados import crear_estructura_resultados
 from utils.tensor_utils import tensor_to_numpy
+from utils.dispositivo import obtener_dispositivo
 
 from modelos.fastgan import EntrenadorFastGAN
-from aplicacion.sistema_gania import SistemaGania, WorkerFastGAN, WorkerDCGAN, WorkerGeneracionMasiva, WorkerClasificacion
+from aplicacion.sistema_gania import SistemaGania, WorkerFastGAN, WorkerDCGAN, WorkerGeneracionMasiva
 from config import CONFIG
 
 configurar_logging()
@@ -74,9 +75,12 @@ class CardPipeline(QFrame):
 
         footer = QHBoxLayout()
         footer.addStretch()
-        arrow = QLabel("Ir a Etapa →")
-        arrow.setStyleSheet("font-weight: bold; color: #3B82F6; background: transparent; font-size: 12px;")
-        footer.addWidget(arrow)
+        lbl_etapa = QLabel("Ir a Etapa")
+        lbl_etapa.setStyleSheet("font-weight: bold; color: #3B82F6; background: transparent; font-size: 12px;")
+        lbl_ico_etapa = QLabel()
+        lbl_ico_etapa.setPixmap(qta.icon("fa5s.arrow-right", color="#3B82F6").pixmap(11, 11))
+        footer.addWidget(lbl_etapa)
+        footer.addWidget(lbl_ico_etapa)
         layout.addLayout(footer)
 
     def mousePressEvent(self, event):
@@ -88,7 +92,7 @@ class CardPipeline(QFrame):
 class VentanaGAN(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("GANIA 2.0 - Generación por Clases con FastGAN (ICLR 2021)")
+        self.setWindowTitle("GANIA - Generación por Clases con FastGAN")
         self.resize(1280, 850)
 
         # 1. Estado del Sistema
@@ -96,8 +100,6 @@ class VentanaGAN(QMainWindow):
         self.fastgan = None
         self.dcgan = None
         self.usuario_id = "Investigador"
-        self._buffer_imgs_reales = []
-        self._buffer_imgs_falsas = []
         self.ruta_dataset_ampliado = None
 
         # 2. Configurar Interfaz
@@ -164,26 +166,42 @@ class VentanaGAN(QMainWindow):
         self.pantallas_stack = QStackedWidget()
         self.layout_base.addWidget(self.pantallas_stack)
 
-        # =========================================================================
-        # 1. PANTALLA DASHBOARD (2) - Vista General del Pipeline
-        # =========================================================================
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
-        dash_content = QWidget(); dash_content.setObjectName("DashboardContent"); layout_dash = QVBoxLayout(dash_content); layout_dash.setContentsMargins(35, 30, 35, 30); layout_dash.setSpacing(20)
 
-        lbl_welcome = QLabel("Pipeline de Generación y Aumento con FastGAN (Few-Shot Synthesis)")
+        # 1. PANTALLA DASHBOARD (2) - Vista General del Pipeline
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        dash_content = QWidget()
+        dash_content.setObjectName("DashboardContent")
+        layout_dash = QVBoxLayout(dash_content)
+        layout_dash.setContentsMargins(35, 30, 35, 30)
+        layout_dash.setSpacing(20)
+
+        lbl_welcome = QLabel("Pipeline de Generación y Aumento con FastGAN")
         lbl_welcome.setObjectName("WelcomeTitle")
         layout_dash.addWidget(lbl_welcome)
 
-        layout_dash.addWidget(CardPipeline("fa5s.database", "1. Dataset de Entrada & Clases", "Detección automática de clases y conteo de imágenes originales.", "#3B82F6", lambda: self.cambiar_pantalla(3, "Entrenamiento FastGAN por Clase")))
-        layout_dash.addWidget(CardPipeline("fa5s.brain", "2. Entrenamiento FastGAN por Clase", "Sintonización con conectividad SLE y decodificación perceptiva autosupervisada.", "#8B5CF6", lambda: self.cambiar_pantalla(3, "Entrenamiento FastGAN por Clase")))
-        layout_dash.addWidget(CardPipeline("fa5s.magic", "3. Aumento por Porcentaje", "Selección de porcentaje (e.g. 25%), generación sintética y fusión del dataset ampliado.", "#10B981", lambda: self.cambiar_pantalla(4, "Dataset Ampliado por Porcentaje")))
+        # Tarjetas Consolidadas
+        layout_dash.addWidget(CardPipeline(
+            "fa5s.brain", "1. Configuración de Dataset y Entrenamiento FastGAN",
+            "Carga de datos, detección de clases y entrenamiento exclusivo por clase.",
+            "#3B82F6", lambda: self.cambiar_pantalla(3, "Entrenamiento FastGAN por Clase")
+        ))
+        layout_dash.addWidget(CardPipeline(
+            "fa5s.magic", "2. Aumento de Dataset por Porcentaje",
+            "Generación sintética por porcentaje y exportación del dataset ampliado.",
+            "#10B981", lambda: self.cambiar_pantalla(4, "Dataset Ampliado por Porcentaje")
+        ))
 
-        layout_dash.addStretch(); scroll.setWidget(dash_content); self.pantallas_stack.addWidget(scroll)
+        layout_dash.addStretch()
+        scroll.setWidget(dash_content)
+        self.pantallas_stack.addWidget(scroll)
 
-        # =========================================================================
         # 2. PANTALLA ENTRENAMIENTO FASTGAN (3)
-        # =========================================================================
-        self.pantalla_fastgan = QWidget(); layout_fastgan = QHBoxLayout(self.pantalla_fastgan)
+
+        self.pantalla_fastgan = QWidget()
+        layout_fastgan = QHBoxLayout(self.pantalla_fastgan)
 
         # Panel Izquierdo: Controles
         self.panel_dataset = PanelConfiguracionDataset()
@@ -191,21 +209,30 @@ class VentanaGAN(QMainWindow):
         self.panel_control_fastgan.senal_iniciar_fastgan.connect(self.iniciar_entrenamiento_fastgan)
         self.panel_control_fastgan.senal_detener_fastgan.connect(self.detener_fastgan)
 
-        scroll_izq = QScrollArea(); scroll_izq.setFixedWidth(400); scroll_izq.setWidgetResizable(True)
-        cont_izq = QWidget(); l_izq = QVBoxLayout(cont_izq)
+        scroll_izq = QScrollArea()
+        scroll_izq.setFixedWidth(400)
+        scroll_izq.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_izq.setWidgetResizable(True)
+        cont_izq = QWidget()
+        l_izq = QVBoxLayout(cont_izq)
+        l_izq.setContentsMargins(6, 4, 12, 8)
         l_izq.addWidget(self.panel_dataset)
         l_izq.addWidget(self.panel_control_fastgan)
-        l_izq.addStretch(); scroll_izq.setWidget(cont_izq)
+        l_izq.addStretch()
+        scroll_izq.setWidget(cont_izq)
         layout_fastgan.addWidget(scroll_izq)
 
-        # Panel Derecho: Visualización y Gráficos (Rejilla de 3x3)
+        # Panel Derecho: Visualización y Gráficos (Rejilla de 3x3 durante entrenamiento)
         der = QVBoxLayout()
         self.panel_vis_fastgan = PanelVisualizacion("Muestras Sintéticas FastGAN (Rejilla 3x3)")
         self.stats_fastgan = PanelEstadisticasFastGAN()
 
-        self.panel_inferior = QTabWidget(); self.panel_inferior.setFixedHeight(270)
-        self.log_eventos = QTextEdit(); self.log_eventos.setReadOnly(True); self.log_eventos.setObjectName("BitacoraLog")
-        self.panel_inferior.addTab(self.stats_fastgan, "Gráficos de Pérdida & FID")
+        self.panel_inferior = QTabWidget()
+        self.panel_inferior.setFixedHeight(270)
+        self.log_eventos = QTextEdit()
+        self.log_eventos.setReadOnly(True)
+        self.log_eventos.setObjectName("BitacoraLog")
+        self.panel_inferior.addTab(self.stats_fastgan, "Gráficos de Pérdida y FID")
         self.panel_inferior.addTab(self.log_eventos, "Bitácora del Sistema")
 
         der.addWidget(self.panel_vis_fastgan, 1)
@@ -214,31 +241,44 @@ class VentanaGAN(QMainWindow):
 
         self.pantallas_stack.addWidget(self.pantalla_fastgan)
 
-        # =========================================================================
         # 3. PANTALLA AUMENTO DE DATASET (4)
-        # =========================================================================
-        self.pantalla_aumento = QWidget(); layout_aumento = QHBoxLayout(self.pantalla_aumento)
+
+        self.pantalla_aumento = QWidget()
+        layout_aumento = QHBoxLayout(self.pantalla_aumento)
 
         self.panel_control_aumento = PanelAumentoDataset()
         self.panel_control_aumento.senal_generar_aumento.connect(self.ejecutar_aumento_dataset)
 
-        scroll_aum = QScrollArea(); scroll_aum.setFixedWidth(420); scroll_aum.setWidgetResizable(True)
-        cont_aum = QWidget(); l_aum = QVBoxLayout(cont_aum)
+        scroll_aum = QScrollArea()
+        scroll_aum.setFixedWidth(420)
+        scroll_aum.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_aum.setWidgetResizable(True)
+        cont_aum = QWidget()
+        l_aum = QVBoxLayout(cont_aum)
         l_aum.addWidget(self.panel_control_aumento)
-        l_aum.addStretch(); scroll_aum.setWidget(cont_aum)
+        l_aum.addStretch()
+        scroll_aum.setWidget(cont_aum)
         layout_aumento.addWidget(scroll_aum)
 
-        # Vista derecha
+        # Vista derecha: Galería de Muestras Sintéticas Individuales
         der_aum = QVBoxLayout()
-        self.panel_vis_aumento = PanelVisualizacion("Vista del Dataset Ampliado (Rejilla 3x3 Sintéticas FastGAN)")
-        der_aum.addWidget(self.panel_vis_aumento)
+        self.panel_galeria_aumento = PanelGaleriaSinteticas("Galería de Muestras Sintéticas Generadas")
+        der_aum.addWidget(self.panel_galeria_aumento)
         layout_aumento.addLayout(der_aum, 1)
 
         self.pantallas_stack.addWidget(self.pantalla_aumento)
 
         self.panel_dataset.selector_clase.currentIndexChanged.connect(self.validar_inicio_entrenamiento)
 
-        self.barra_estado = QStatusBar(); self.setStatusBar(self.barra_estado)
+        self.barra_estado = QStatusBar()
+        self.setStatusBar(self.barra_estado)
+
+        if torch.cuda.is_available():
+            info_hw = f"Dispositivo activo: GPU ({torch.cuda.get_device_name(0)})"
+        else:
+            info_hw = "Dispositivo activo: CPU (No se detectó GPU CUDA)"
+        self.barra_estado.showMessage(info_hw)
+
         self.cambiar_tema(False)
 
     def cambiar_pantalla(self, indice, titulo):
@@ -247,7 +287,6 @@ class VentanaGAN(QMainWindow):
         self.header.setVisible(indice >= 2)
 
     def cambiar_tema(self, oscuro):
-        from interfaces.estilos import ESTILO_OSCURO, ESTILO_CLARO
         self.setStyleSheet(ESTILO_OSCURO if oscuro else ESTILO_CLARO)
 
     def escribir_log(self, mensaje):
@@ -270,10 +309,14 @@ class VentanaGAN(QMainWindow):
         clase_sel = self.panel_dataset.obtener_clase_seleccionada()
         cant_orig = self.panel_dataset.obtener_cantidad_original_clase()
 
-        # Actualizar la UI del panel de aumento con el número real de imágenes de la clase
         self.panel_control_aumento.actualizar_conteo_original(cant_orig)
 
-        habilitar = (ruta_ds is not None and os.path.exists(ruta_ds) and clase_sel is not None and clase_sel != "Sin clases detectadas")
+        habilitar = (
+            ruta_ds is not None and
+            os.path.exists(ruta_ds) and
+            clase_sel is not None and
+            clase_sel != "Sin clases detectadas"
+        )
         self.panel_control_fastgan.btn_iniciar.setEnabled(habilitar)
 
     # =========================================================================
@@ -294,33 +337,43 @@ class VentanaGAN(QMainWindow):
 
         self.panel_control_fastgan.btn_iniciar.setEnabled(False)
         self.panel_control_fastgan.btn_detener.setEnabled(True)
-        self.panel_control_fastgan.set_entrenando(True)
         self.panel_control_aumento.set_estado_modelo_listo(False)
         self.stats_fastgan.limpiar()
         self.log_eventos.clear()
-        self._buffer_imgs_reales = []
-        self._buffer_imgs_falsas = []
 
         lr = self.panel_control_fastgan.spin_lr.value()
         batch = self.panel_control_fastgan.spin_batch.value()
         epocas = self.panel_control_fastgan.spin_epocas.value()
 
-        dispositivo = self.panel_control_fastgan.obtener_dispositivo()
-        if dispositivo.type == "cuda":
-            import torch
-            self.escribir_log(f"Dispositivo de entrenamiento: GPU NVIDIA ({torch.cuda.get_device_name(0)}) con CUDA.")
-        else:
-            self.escribir_log("Dispositivo de entrenamiento: CPU (el entrenamiento será más lento).")
+        dispositivo_actual = obtener_dispositivo(usar_gpu=self.panel_control_fastgan.usar_gpu())
+        resolucion = self.panel_control_fastgan.obtener_resolucion()
 
-        self.escribir_log(f"Iniciando entrenamiento FastGAN exclusivo para la clase '{clase_sel}'...")
-        from config import CONFIG
-        cfg_gan = CONFIG["FASTGAN"]
-        self.fastgan = EntrenadorFastGAN(
-            dispositivo=dispositivo, lr=lr,
-            politica_aug=cfg_gan.get("POLITICA_DIFFAUGMENT", "color,translation,cutout"),
-            ema_beta=cfg_gan.get("EMA_BETA", 0.999)
-        )
-        self.dcgan = self.fastgan  # Alias para compatibilidad
+        if str(dispositivo_actual) == "cpu" and resolucion > 64:
+            mult = 4 if resolucion == 128 else 16
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Aviso de Rendimiento en CPU")
+            msg.setText(
+                f"Entrenar a {resolucion}x{resolucion} px en CPU es ~{mult}x más lento "
+                f"que en 64x64 px y usa más memoria RAM.\n\n"
+                f"¿Deseas usar 64x64 px o continuar de todos modos?"
+            )
+            btn_cambiar = msg.addButton("Usar 64x64", QMessageBox.AcceptRole)
+            btn_continuar = msg.addButton("Continuar", QMessageBox.DestructiveRole)
+            btn_cancelar = msg.addButton("Cancelar", QMessageBox.RejectRole)
+            msg.exec_()
+
+            if msg.clickedButton() == btn_cancelar:
+                self.panel_control_fastgan.btn_iniciar.setEnabled(True)
+                self.panel_control_fastgan.btn_detener.setEnabled(False)
+                return
+            elif msg.clickedButton() == btn_cambiar:
+                self.panel_control_fastgan.combo_resolucion.setCurrentIndex(0)
+                resolucion = 64
+        self.escribir_log(f"Dispositivo de cómputo detectado: {str(dispositivo_actual).upper()}")
+        self.escribir_log(f"Iniciando entrenamiento FastGAN ({resolucion}x{resolucion} px) para la clase '{clase_sel}'...")
+        self.fastgan = EntrenadorFastGAN(dispositivo=dispositivo_actual, lr=lr, tamano_img=resolucion)
+        self.dcgan = self.fastgan
 
         self.worker_fastgan = WorkerFastGAN(
             modelo_fastgan=self.fastgan,
@@ -333,15 +386,8 @@ class VentanaGAN(QMainWindow):
         self.worker_fastgan.finalizado_epoca.connect(self.on_fastgan_epoca_terminada)
         self.worker_fastgan.entrenamiento_completado.connect(self.on_fastgan_completado)
         self.worker_fastgan.senal_log.connect(self.escribir_log)
-        self.worker_fastgan.error.connect(self.on_fastgan_error)
+        self.worker_fastgan.error.connect(lambda e: self.barra_estado.showMessage(f"Error: {e}"))
         self.worker_fastgan.start()
-
-    def on_fastgan_error(self, e):
-        self.barra_estado.showMessage(f"Error: {e}")
-        self.escribir_log(f"Error: {e}")
-        self.panel_control_fastgan.btn_iniciar.setEnabled(True)
-        self.panel_control_fastgan.btn_detener.setEnabled(False)
-        self.panel_control_fastgan.set_entrenando(False)
 
     def on_fastgan_epoca_terminada(self, epoca, lg, ld, datos):
         img = datos.get('img') if isinstance(datos, dict) else datos
@@ -350,30 +396,43 @@ class VentanaGAN(QMainWindow):
         if img is not None:
             self.panel_vis_fastgan.mostrar_imagen(img)
 
-        # Las métricas se calculan en el worker (cada N épocas) con suficientes muestras.
-        fid_val = kid_val = div_val = None
-        if metricas:
-            fid_val, kid_val, div_val = metricas.get("fid"), metricas.get("kid"), metricas.get("diversidad")
+        fid_val = None
+        div_val = None
+        if isinstance(metricas, dict):
+            fid_raw = metricas.get("fid")
+            div_raw = metricas.get("diversidad")
+            if isinstance(fid_raw, (int, float)):
+                fid_val = float(fid_raw)
+            if isinstance(div_raw, str) and "%" in div_raw:
+                try:
+                    div_val = float(div_raw.replace("%", "").strip())
+                except ValueError:
+                    div_val = None
+            elif isinstance(div_raw, (int, float)):
+                div_val = float(div_raw)
 
-        self.stats_fastgan.actualizar(epoca, lg, ld, fid=fid_val, diversidad=div_val, kid=kid_val)
+        self.stats_fastgan.actualizar(epoca, lg, ld, fid=fid_val, diversidad=div_val)
 
-        self.panel_control_fastgan.barra_progreso.setValue(int((epoca / self.panel_control_fastgan.spin_epocas.value()) * 100))
+        max_ep = max(1, self.panel_control_fastgan.spin_epocas.value())
+        self.panel_control_fastgan.barra_progreso.setValue(int((epoca / max_ep) * 100))
 
     def on_fastgan_completado(self, msj):
         self.escribir_log(msj)
         self.panel_control_fastgan.btn_iniciar.setEnabled(True)
         self.panel_control_fastgan.btn_detener.setEnabled(False)
-        self.panel_control_fastgan.set_entrenando(False)
         self.panel_control_aumento.set_estado_modelo_listo(True)
         clase_sel = self.panel_dataset.obtener_clase_seleccionada()
-        QMessageBox.information(self, "FastGAN Entrenada", f"FastGAN entrenada y guardada exitosamente para la clase '{clase_sel}'.\n\nEl modelo está listo para generar imágenes sintéticas de alta fidelidad.")
+        QMessageBox.information(
+            self, "FastGAN Entrenada",
+            f"FastGAN entrenada y guardada exitosamente para la clase '{clase_sel}'.\n\n"
+            f"El modelo está listo para generar imágenes sintéticas de alta fidelidad."
+        )
 
     def detener_fastgan(self):
         if hasattr(self, 'worker_fastgan') and self.worker_fastgan.isRunning():
             self.worker_fastgan.abortar()
             self.panel_control_fastgan.btn_iniciar.setEnabled(True)
             self.panel_control_fastgan.btn_detener.setEnabled(False)
-            self.panel_control_fastgan.set_entrenando(False)
             self.escribir_log("Entrenamiento de FastGAN detenido por el usuario.")
 
     # =========================================================================
@@ -387,39 +446,67 @@ class VentanaGAN(QMainWindow):
         ruta_orig = self.panel_dataset.obtener_ruta_dataset()
         clase_sel = self.panel_dataset.obtener_clase_seleccionada()
 
+        if not ruta_orig or not os.path.exists(ruta_orig):
+            QMessageBox.warning(self, "Dataset Original Requerido", "Selecciona primero la carpeta del dataset original en la pestaña FastGAN.")
+            return
+
+        self.panel_control_aumento.btn_generar_aumento.setEnabled(False)
+        self.panel_control_aumento.iniciar_progreso_aumento()
+
         self.worker_aumento = WorkerGeneracionMasiva(
             entrenador_fastgan=self.fastgan,
             ruta_original=ruta_orig,
             clase_seleccionada=clase_sel,
             cantidad_sinteticas=cantidad_sinteticas
         )
+        self.worker_aumento.progreso.connect(self.panel_control_aumento.actualizar_progreso_aumento)
         self.worker_aumento.senal_log.connect(self.escribir_log)
         self.worker_aumento.completado.connect(self.on_aumento_completado)
-        self.worker_aumento.error.connect(lambda e: QMessageBox.critical(self, "Error Aumento", e))
+        self.worker_aumento.error.connect(self._on_error_aumento)
         self.worker_aumento.start()
 
-    def on_aumento_completado(self, ruta_ampliado, ruta_zip, img_grid_sinteticas=None):
+    def _on_error_aumento(self, e):
+        self.panel_control_aumento.btn_generar_aumento.setEnabled(True)
+        self.panel_control_aumento.finalizar_progreso_aumento(exito=False)
+        QMessageBox.critical(self, "Error Aumento", e)
+
+    def on_aumento_completado(self, ruta_ampliado, ruta_zip, dir_sinteticas_clase=None):
         self.ruta_dataset_ampliado = ruta_ampliado
         clase_sel = self.panel_dataset.obtener_clase_seleccionada()
         cant_orig = self.panel_dataset.obtener_cantidad_original_clase()
         cant_sint = self.panel_control_aumento.cant_sintetica_calculada
         total = cant_orig + cant_sint
 
-        if img_grid_sinteticas is not None:
-            self.panel_vis_aumento.mostrar_imagen(img_grid_sinteticas)
+        # Cargar galería de imágenes sintéticas individuales manteniendo sincronizada la barra de progreso
+        if dir_sinteticas_clase and os.path.exists(dir_sinteticas_clase):
+            pct_base = self.worker_aumento.porcentaje_inicio_galeria() if hasattr(self, 'worker_aumento') else 85
+            def cb_galeria(actual, total_fotos):
+                frac = actual / max(1, total_fotos)
+                pct = int(pct_base + frac * (99 - pct_base))
+                self.panel_control_aumento.actualizar_progreso_aumento(pct, f"Cargando vista previa ({actual}/{total_fotos})")
+
+            self.panel_galeria_aumento.cargar_galeria_desde_carpeta(dir_sinteticas_clase, callback_progreso=cb_galeria)
+
+        self.panel_control_aumento.finalizar_progreso_aumento(exito=True)
+        self.panel_control_aumento.btn_generar_aumento.setEnabled(True)
 
         self.escribir_log(f"Dataset Ampliado creado exitosamente en {ruta_ampliado}")
-        QMessageBox.information(self, "Dataset Ampliado Creado",
+        QMessageBox.information(
+            self, "Dataset Ampliado Creado",
             f"Proceso de aumento finalizado sin re-entrenamiento:\n\n"
-            f"• Clase: '{clase_sel}'\n"
-            f"• Imágenes Originales: {cant_orig}\n"
-            f"• Imágenes Sintéticas FastGAN: {cant_sint}\n"
-            f"• Total en Dataset Ampliado: {total}\n\n"
+            f"- Clase: '{clase_sel}'\n"
+            f"- Imágenes Originales: {cant_orig}\n"
+            f"- Imágenes Sintéticas FastGAN: {cant_sint}\n"
+            f"- Total en Dataset Ampliado: {total}\n\n"
             f"Ubicación: ./datos/datasets/augmented/{clase_sel}/\n"
-            f"Paquete ZIP: {ruta_zip}")
+            f"Paquete ZIP: {ruta_zip}"
+        )
 
     def mostrar(self):
         self.show()
 
     def closeEvent(self, event):
+        if hasattr(self, 'worker_fastgan') and self.worker_fastgan.isRunning():
+            self.worker_fastgan.abortar()
+            self.worker_fastgan.wait(1500)
         event.accept()

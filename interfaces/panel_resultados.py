@@ -1,4 +1,5 @@
 # interfaces/panel_resultados.py
+import os
 import numpy as np
 import matplotlib
 import time
@@ -7,18 +8,130 @@ from matplotlib.figure import Figure
 matplotlib.rcParams['font.sans-serif'] = ['Segoe UI', 'Arial', 'sans-serif']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtCore import Qt, pyqtSignal, QUrl
+from PyQt5.QtGui import QImage, QPixmap, QDesktopServices
 from PyQt5.QtWidgets import (
     QFrame, QGroupBox, QHBoxLayout, QLabel,
     QPushButton, QVBoxLayout, QWidget, QScrollArea, QGridLayout,
-    QTableWidget, QTableWidgetItem, QHeaderView, QApplication
+    QApplication
 )
 import qtawesome as qta
 from utils.gestor_logs import obtener_logger
-from utils.metricas_ia import graficar_matriz_confusion_ax
 
 logger = obtener_logger("UI.Resultados")
+
+
+class TarjetaImagenSintetica(QFrame):
+    """
+    Tarjeta individual interactiva para cada imagen sintética generada.
+    """
+    def __init__(self, ruta_imagen, titulo_muestra, al_clic=None):
+        super().__init__()
+        self.ruta_imagen = ruta_imagen
+        self.al_clic = al_clic
+        self.setObjectName("ModuloCard")
+        self.setCursor(Qt.PointingHandCursor)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        self.lbl_img = QLabel()
+        pixmap = QPixmap(ruta_imagen)
+        if not pixmap.isNull():
+            pixmap_escalado = pixmap.scaled(150, 150, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.lbl_img.setPixmap(pixmap_escalado)
+        else:
+            self.lbl_img.setText("Error al cargar")
+
+        self.lbl_img.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.lbl_img)
+
+        self.lbl_info = QLabel(titulo_muestra)
+        self.lbl_info.setAlignment(Qt.AlignCenter)
+        self.lbl_info.setStyleSheet("font-size: 11px; font-weight: bold; color: #3B82F6;")
+        layout.addWidget(self.lbl_info)
+
+    def mousePressEvent(self, event):
+        if self.al_clic:
+            self.al_clic(self.ruta_imagen)
+        super().mousePressEvent(event)
+
+
+class PanelGaleriaSinteticas(QGroupBox):
+    """
+    Galería desplegable e interactiva con cuadrícula (Grid) de imágenes sintéticas individuales.
+    Reemplaza la vista fija de rejilla 3x3 por una cuadrícula desplazable de fotos independientes.
+    """
+    def __init__(self, titulo="Galería de Imágenes Sintéticas Generadas"):
+        super().__init__(titulo)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 18, 12, 12)
+
+        # Contador de resumen
+        self.lbl_conteo_galeria = QLabel("Esperando generación de muestras...")
+        self.lbl_conteo_galeria.setStyleSheet("font-size: 12px; font-weight: bold; color: #94A3B8; margin-bottom: 5px;")
+        layout.addWidget(self.lbl_conteo_galeria)
+
+        # Scroll Area para la galería
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+
+        self.contenedor = QWidget()
+        self.grid_layout = QGridLayout(self.contenedor)
+        self.grid_layout.setContentsMargins(5, 5, 5, 5)
+        self.grid_layout.setSpacing(12)
+
+        self.scroll.setWidget(self.contenedor)
+        layout.addWidget(self.scroll, 1)
+
+    def limpiar(self):
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.lbl_conteo_galeria.setText("Esperando generación de muestras...")
+
+    def cargar_galeria_desde_carpeta(self, ruta_carpeta, max_columnas=3, callback_progreso=None):
+        """
+        Escanea la carpeta de imágenes sintéticas individuales (.png) y las renderiza en la rejilla.
+        """
+        self.limpiar()
+
+        if not os.path.exists(ruta_carpeta):
+            self.lbl_conteo_galeria.setText("No se encontró la carpeta de muestras sintéticas.")
+            return
+
+        extensiones = ('.png', '.jpg', '.jpeg', '.webp')
+        archivos = [f for f in os.listdir(ruta_carpeta) if f.lower().endswith(extensiones)]
+        archivos.sort()
+
+        if not archivos:
+            self.lbl_conteo_galeria.setText("La carpeta de sintéticas aún no contiene imágenes.")
+            return
+
+        self.lbl_conteo_galeria.setText(f"Mostrando {len(archivos)} imágenes sintéticas individuales generadas:")
+
+        for idx, filename in enumerate(archivos):
+            path_img = os.path.join(ruta_carpeta, filename)
+            titulo = f"Sintética {idx + 1:03d}"
+
+            tarjeta = TarjetaImagenSintetica(path_img, titulo, al_clic=self._al_hacer_clic_muestra)
+            fila = idx // max_columnas
+            columna = idx % max_columnas
+            self.grid_layout.addWidget(tarjeta, fila, columna)
+
+            # Reportar progreso real y refrescar la UI para que la barra avance mientras se dibuja
+            if callback_progreso:
+                callback_progreso(idx + 1, len(archivos))
+            if (idx + 1) % 8 == 0:
+                QApplication.processEvents()
+
+    def _al_hacer_clic_muestra(self, ruta_img):
+        """Abre la imagen individual en el visor predeterminado del sistema operativo."""
+        if os.path.exists(ruta_img):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(ruta_img)))
 
 
 class PanelVisualizacion(QGroupBox):
@@ -58,15 +171,13 @@ class PanelEstadisticasFastGAN(QGroupBox):
 
         self.ax1 = self.figura.add_subplot(121)
         self.ax2 = self.figura.add_subplot(122)
-        self.ax2b = self.ax2.twinx()  # Eje secundario para Diversidad (%)
+        self.ax2b = self.ax2.twinx()
 
         self.epochs = []
         self.losses_G = []
         self.losses_D = []
         self.epochs_fid = []
         self.fid_values = []
-        self.epochs_kid = []
-        self.kid_values = []
         self.epochs_div = []
         self.div_values = []
         self.last_draw_time = 0
@@ -80,8 +191,6 @@ class PanelEstadisticasFastGAN(QGroupBox):
         self.losses_D = []
         self.epochs_fid = []
         self.fid_values = []
-        self.epochs_kid = []
-        self.kid_values = []
         self.epochs_div = []
         self.div_values = []
         self.ax1.clear()
@@ -89,13 +198,12 @@ class PanelEstadisticasFastGAN(QGroupBox):
         self.ax2b.clear()
         self.canvas.draw()
 
-    def actualizar(self, epoca, loss_G, loss_D, fid=None, diversidad=None, kid=None):
+    def actualizar(self, epoca, loss_G, loss_D, fid=None, diversidad=None):
         self.epochs.append(epoca)
         self.losses_G.append(loss_G)
         self.losses_D.append(loss_D)
 
-        hay_metricas = fid is not None or kid is not None or diversidad is not None
-        if (time.time() - self.last_draw_time < 0.4) and not hay_metricas:
+        if (time.time() - self.last_draw_time < 0.4) and (fid is None):
             return
         self.last_draw_time = time.time()
 
@@ -125,21 +233,22 @@ class PanelEstadisticasFastGAN(QGroupBox):
         self.ax1.legend(loc="upper right", fontsize='x-small', framealpha=0.5)
         for s in self.ax1.spines.values(): s.set_color(color_grid)
 
-        # --- PLOT 2: CALIDAD GAN (KID/FID & DIVERSIDAD) ---
-        def _a_float(v):
+        # --- PLOT 2: CALIDAD GAN (FID & DIVERSIDAD) ---
+        if fid is not None:
             try:
-                return float(v.replace("%", "")) if isinstance(v, str) else float(v)
-            except (ValueError, TypeError, AttributeError):
-                return None
+                val = float(fid)
+                self.fid_values.append(val)
+                self.epochs_fid.append(epoca)
+            except (ValueError, TypeError):
+                pass
 
-        for valor, lista_ep, lista_val in ((fid, self.epochs_fid, self.fid_values),
-                                           (kid, self.epochs_kid, self.kid_values),
-                                           (diversidad, self.epochs_div, self.div_values)):
-            if valor is not None:
-                v = _a_float(valor)
-                if v is not None:
-                    lista_val.append(v)
-                    lista_ep.append(epoca)
+        if diversidad is not None:
+            try:
+                val = float(diversidad.replace("%", "")) if isinstance(diversidad, str) else float(diversidad)
+                self.div_values.append(val)
+                self.epochs_div.append(epoca)
+            except (ValueError, TypeError):
+                pass
 
         self.ax2.clear()
         self.ax2b.clear()
@@ -148,93 +257,33 @@ class PanelEstadisticasFastGAN(QGroupBox):
         self.ax2b.yaxis.set_label_position("right")
         self.ax2.set_facecolor(bg_plots)
         lineas = []
-        # KID es fiable con pocas muestras: se prioriza sobre FID en el gráfico.
-        if self.kid_values:
-            lineas += self.ax2.plot(self.epochs_kid, self.kid_values, 'o-', label="KID×1000 (↓)", color="#8B5CF6", markersize=4)
-            self.ax2.set_ylabel("KID×1000", color=color_sub, fontsize=8)
-        elif self.fid_values:
-            lineas += self.ax2.plot(self.epochs_fid, self.fid_values, 'o-', label="FID (↓)", color="#8B5CF6", markersize=4)
+        if len(self.fid_values) > 0:
+            lineas += self.ax2.plot(self.epochs_fid, self.fid_values, 'o-', label="FID", color="#8B5CF6", markersize=4)
             self.ax2.set_ylabel("FID", color=color_sub, fontsize=8)
-        if self.div_values:
-            lineas += self.ax2b.plot(self.epochs_div, self.div_values, 's--', label="Diversidad % (↑)", color="#10B981", markersize=4)
+        if len(self.div_values) > 0:
+            lineas += self.ax2b.plot(self.epochs_div, self.div_values, 's--', label="Diversidad %", color="#10B981", markersize=4)
             self.ax2b.set_ylim(0, max(110, max(self.div_values) * 1.1))
             self.ax2b.set_ylabel("Diversidad %", color=color_sub, fontsize=8)
-
-        self.ax2.set_title("Calidad (KID) y Diversidad", color=color_main, fontsize=10, fontweight='bold')
-        self.ax2.set_xlabel("Épocas", color=color_sub, fontsize=8)
-        self.ax2.tick_params(colors=color_sub, labelsize=7)
-        self.ax2b.tick_params(colors=color_sub, labelsize=7)
-        self.ax2.grid(True, linestyle="--", alpha=0.3, color=color_grid)
+            self.ax2b.tick_params(colors=color_sub, labelsize=7)
+            for s in self.ax2b.spines.values(): s.set_color(color_grid)
         if lineas:
             self.ax2.legend(lineas, [l.get_label() for l in lineas], loc="upper right", fontsize='x-small', framealpha=0.5)
+
+
+
+
+
+
+        self.ax2.set_title("Calidad (FID) y Diversidad", color=color_main, fontsize=10, fontweight='bold')
+        self.ax2.set_xlabel("Épocas", color=color_sub, fontsize=8)
+        self.ax2.tick_params(colors=color_sub, labelsize=7)
+        self.ax2.grid(True, linestyle="--", alpha=0.3, color=color_grid)
+
         for s in self.ax2.spines.values(): s.set_color(color_grid)
-        for s in self.ax2b.spines.values(): s.set_color(color_grid)
 
         self.figura.tight_layout()
         self.canvas.draw()
 
 
-# Alias de retrocompatibilidad
+# Aliases de retrocompatibilidad
 PanelEstadisticasDCGAN = PanelEstadisticasFastGAN
-
-
-class PanelEvaluacionClasificacion(QGroupBox):
-    """Panel de Comparación Experimental: Clasificador en Dataset Original vs. Dataset Ampliado."""
-    def __init__(self):
-        super().__init__("Evaluación Experimental de Clasificación (Original vs. Ampliado)")
-        layout = QVBoxLayout(self)
-
-        # Tabla Comparativa de Métricas
-        self.tabla = QTableWidget(2, 4)
-        self.tabla.setHorizontalHeaderLabels(["Accuracy", "Precision", "Recall", "F1-Score"])
-        self.tabla.setVerticalHeaderLabels(["Dataset Original", "Dataset Ampliado (FastGAN)"])
-        self.tabla.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.tabla.verticalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.tabla.setFixedHeight(110)
-        layout.addWidget(self.tabla)
-
-        # Matrices de Confusión
-        self.figura = Figure(figsize=(8.5, 3.5), facecolor='none')
-        self.canvas = FigureCanvas(self.figura)
-        self.ax_orig = self.figura.add_subplot(121)
-        self.ax_amp = self.figura.add_subplot(122)
-
-        layout.addWidget(self.canvas)
-        self.figura.tight_layout()
-
-    def actualizar_resultados(self, resultados):
-        """
-        Pinta la tabla comparativa y las matrices de confusión reales.
-        """
-        orig = resultados.get("original", {})
-        amp = resultados.get("ampliado", {})
-
-        # Llenar Tabla
-        metrics_keys = ["accuracy", "precision", "recall", "f1_score"]
-        for col, key in enumerate(metrics_keys):
-            val_orig = f"{orig.get(key, 0.0)*100:.2f}%" if key in orig else "N/A"
-            val_amp = f"{amp.get(key, 0.0)*100:.2f}%" if key in amp else "N/A"
-
-            item_o = QTableWidgetItem(val_orig)
-            item_a = QTableWidgetItem(val_amp)
-            item_o.setTextAlignment(Qt.AlignCenter)
-            item_a.setTextAlignment(Qt.AlignCenter)
-
-            self.tabla.setItem(0, col, item_o)
-            self.tabla.setItem(1, col, item_a)
-
-        # Dibujar Matrices de Confusión
-        is_dark = True
-        try:
-            style = QApplication.instance().styleSheet()
-            if "background-color: #F8FAFC" in style: is_dark = False
-        except: pass
-
-        if "matriz_confusion" in orig:
-            graficar_matriz_confusion_ax(self.ax_orig, orig["matriz_confusion"], titulo="Matriz: Dataset Original", is_dark=is_dark)
-
-        if "matriz_confusion" in amp:
-            graficar_matriz_confusion_ax(self.ax_amp, amp["matriz_confusion"], titulo="Matriz: Dataset Ampliado", is_dark=is_dark)
-
-        self.figura.tight_layout()
-        self.canvas.draw()
