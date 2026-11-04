@@ -31,6 +31,7 @@ class TarjetaImagenSintetica(QFrame):
         self.al_clic = al_clic
         self.setObjectName("ModuloCard")
         self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("Haz clic para abrir la muestra en tamaño completo")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -142,7 +143,8 @@ class PanelVisualizacion(QGroupBox):
         self.setLayout(self.layout)
         self.imagen_actual = None
 
-        self.label_imagen = QLabel("Esperando imagen...")
+        self.label_imagen = QLabel("Selecciona una clase y presiona 'Entrenar' para visualizar la rejilla 3x3 en tiempo real.")
+        self.label_imagen.setStyleSheet("color: #94A3B8; font-size: 13px; font-style: italic;")
         self.label_imagen.setAlignment(Qt.AlignCenter)
         self.layout.addWidget(self.label_imagen)
 
@@ -286,4 +288,4 @@ class PanelEstadisticasFastGAN(QGroupBox):
 
 
 # Aliases de retrocompatibilidad
-PanelEstadisticasDCGAN = PanelEstadisticasFastGAN
+

@@ -21,8 +21,14 @@ logger = obtener_logger("UI.Entrenamiento")
 
 
 def icono_blanco(nombre):
-    """Crea un icono de QtAwesome en color blanco puro constante para todos los estados."""
-    return qta.icon(nombre, color="white", color_active="white", color_disabled="white")
+    """Crea un icono de QtAwesome blanco para estado activo y atenuado cuando el botón está deshabilitado."""
+    return qta.icon(nombre, color="white", color_active="white", color_disabled="#94A3B8")
+
+
+def _proteger_scroll(widget):
+    """Evita que la rueda del ratón cambie por accidente el valor al hacer scroll en el panel."""
+    widget.setFocusPolicy(Qt.StrongFocus)
+    widget.wheelEvent = lambda event: event.ignore()
 
 
 def _ajustar_combo(combo):
@@ -30,6 +36,7 @@ def _ajustar_combo(combo):
     combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
     combo.setMinimumContentsLength(10)
     combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    _proteger_scroll(combo)
 
 
 class WorkerCargaDataset(QThread):
@@ -104,6 +111,7 @@ class PanelConfiguracionDataset(QGroupBox):
         layout_url = QVBoxLayout(self.container_url)
         self.input_url = QLineEdit()
         self.input_url.setPlaceholderText("https://www.robots.ox.ac.uk/~vgg/data/flowers/17/17flowers.tgz")
+        self.input_url.returnPressed.connect(self._descargar_url)
         layout_url.addWidget(self.input_url)
 
         self.btn_descargar_url = QPushButton(" Descargar y Extraer")
@@ -317,9 +325,12 @@ class PanelControlFastGAN(QGroupBox):
         layout.addWidget(QLabel("Tasa de Aprendizaje (LR)"))
         self.spin_lr = QDoubleSpinBox()
         self.spin_lr.setDecimals(6)
-        self.spin_lr.setRange(0.000001, 0.01)
-        self.spin_lr.setValue(0.0002)
+        self.spin_lr.setRange(0.000010, 0.010000)
+        self.spin_lr.setSingleStep(0.000050)
+        self.spin_lr.setAccelerated(True)
+        self.spin_lr.setValue(0.000200)
         self.spin_lr.setFixedHeight(35)
+        _proteger_scroll(self.spin_lr)
         layout.addWidget(self.spin_lr)
 
         # 4. Lote y Épocas en 2 columnas simétricas
@@ -331,9 +342,11 @@ class PanelControlFastGAN(QGroupBox):
         col_batch.addWidget(QLabel("Tamaño de Lote"))
         self.spin_batch = QSpinBox()
         self.spin_batch.setRange(4, 256)
+        self.spin_batch.setSingleStep(4)
         self.spin_batch.setValue(32 if es_gpu else 8)
         self.spin_batch.setFixedHeight(35)
         self.spin_batch.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        _proteger_scroll(self.spin_batch)
         col_batch.addWidget(self.spin_batch)
 
         col_epocas = QVBoxLayout()
@@ -341,23 +354,36 @@ class PanelControlFastGAN(QGroupBox):
         col_epocas.addWidget(QLabel("Épocas"))
         self.spin_epocas = QSpinBox()
         self.spin_epocas.setRange(1, 100000)
-        self.spin_epocas.setSingleStep(50)
+        self.spin_epocas.setSingleStep(10)
+        self.spin_epocas.setAccelerated(True)
         self.spin_epocas.setValue(25)
         self.spin_epocas.setFixedHeight(35)
         self.spin_epocas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        _proteger_scroll(self.spin_epocas)
         col_epocas.addWidget(self.spin_epocas)
 
         fila_params.addLayout(col_batch, 1)
         fila_params.addLayout(col_epocas, 1)
         layout.addLayout(fila_params)
 
-        # 5. Progreso
+        # 5. Progreso y Estimación de Tiempo (ETA)
         self.barra_progreso = QProgressBar()
-        self.barra_progreso.setFixedHeight(18)
+        self.barra_progreso.setFixedHeight(20)
         self.barra_progreso.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.barra_progreso)
 
-        # 6. Botones de Acción (Simetría 1:1 exacta)
+        fila_estado_tr = QHBoxLayout()
+        fila_estado_tr.setSpacing(8)
+        self.lbl_fase_entrenamiento = NotaIcono(compacta=True, tam_icono=11)
+        self.lbl_fase_entrenamiento.establecer("fa5s.hourglass-start", "En espera de inicio", color="#94A3B8")
+        self.lbl_tiempo_entrenamiento = NotaIcono(compacta=True, tam_icono=11)
+        self.lbl_tiempo_entrenamiento.setVisible(False)
+        fila_estado_tr.addWidget(self.lbl_fase_entrenamiento, 1)
+        fila_estado_tr.addWidget(self.lbl_tiempo_entrenamiento, 0)
+        layout.addLayout(fila_estado_tr)
+        self._t_inicio_entrenamiento = None
+
+        # 6. Botones de Acción (Simetría 1:1 exacta + Estilo Claymórfico)
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
         self.btn_iniciar = QPushButton(" Entrenar")
@@ -367,6 +393,7 @@ class PanelControlFastGAN(QGroupBox):
         self.btn_iniciar.clicked.connect(lambda: self.senal_iniciar_fastgan.emit())
 
         self.btn_detener = QPushButton(" Detener")
+        self.btn_detener.setObjectName("BtnDetener")
         self.btn_detener.setIcon(icono_blanco("fa5s.stop"))
         self.btn_detener.setFixedHeight(40)
         self.btn_detener.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -378,6 +405,53 @@ class PanelControlFastGAN(QGroupBox):
         layout.addLayout(btn_layout)
 
         self._al_cambiar_dispositivo_o_resolucion()
+
+    @staticmethod
+    def _formatear_tiempo(segundos):
+        segundos = max(0, int(round(segundos)))
+        m, s = divmod(segundos, 60)
+        return f"{m}:{s:02d} min" if m else f"{s} s"
+
+    def set_controles_entrenamiento_habilitados(self, habilitado):
+        """Bloquea o reactiva los hiperparámetros mientras FastGAN está entrenando."""
+        self.chk_cuda.setEnabled(habilitado and bool(self.info_gpu.get("disponible")))
+        self.combo_resolucion.setEnabled(habilitado)
+        self.spin_lr.setEnabled(habilitado)
+        self.spin_batch.setEnabled(habilitado)
+        self.spin_epocas.setEnabled(habilitado)
+
+    def iniciar_progreso_entrenamiento(self, max_epocas):
+        self._t_inicio_entrenamiento = time.time()
+        self.barra_progreso.setValue(0)
+        self.lbl_fase_entrenamiento.establecer("fa5s.hourglass-start", f"Época 0 / {max_epocas}", color="#3B82F6")
+        self.lbl_tiempo_entrenamiento.establecer("fa5s.clock", "Calculando...", color="#64748B")
+        self.lbl_tiempo_entrenamiento.setVisible(True)
+
+    def actualizar_progreso_entrenamiento(self, epoca, max_epocas):
+        max_ep = max(1, int(max_epocas))
+        pct = int(min(100, round((epoca / max_ep) * 100)))
+        self.barra_progreso.setValue(pct)
+        self.lbl_fase_entrenamiento.establecer("fa5s.hourglass-half", f"Época {epoca} / {max_ep}", color="#3B82F6")
+
+        if self._t_inicio_entrenamiento is not None and epoca >= 1:
+            transcurrido = time.time() - self._t_inicio_entrenamiento
+            restante = (transcurrido / epoca) * max(0, max_ep - epoca)
+            self.lbl_tiempo_entrenamiento.establecer("fa5s.clock", f"Restante: ~{self._formatear_tiempo(restante)}",
+                                                     color="#64748B")
+
+    def finalizar_progreso_entrenamiento(self, exito=True, detenido=False):
+        total = time.time() - self._t_inicio_entrenamiento if self._t_inicio_entrenamiento else 0
+        if detenido:
+            self.lbl_fase_entrenamiento.establecer("fa5s.pause-circle", "Entrenamiento detenido", color="#D97706", negrita=True)
+            self.lbl_tiempo_entrenamiento.establecer("fa5s.stopwatch", f"Tiempo: {self._formatear_tiempo(total)}", color="#64748B")
+        elif exito:
+            self.barra_progreso.setValue(100)
+            self.lbl_fase_entrenamiento.establecer("fa5s.check-circle", "Entrenamiento completado", color="#10B981", negrita=True)
+            self.lbl_tiempo_entrenamiento.establecer("fa5s.stopwatch", f"Total: {self._formatear_tiempo(total)}", color="#10B981")
+        else:
+            self.lbl_fase_entrenamiento.establecer("fa5s.times-circle", "Error en entrenamiento", color="#EF4444", negrita=True)
+            self.lbl_tiempo_entrenamiento.setVisible(False)
+        self._t_inicio_entrenamiento = None
 
     def usar_gpu(self):
         return bool(self.info_gpu.get("disponible") and self.chk_cuda.isChecked())
@@ -421,7 +495,7 @@ class PanelControlFastGAN(QGroupBox):
 
 
 # Alias de retrocompatibilidad
-PanelControlDCGAN = PanelControlFastGAN
+
 
 
 class PanelAumentoDataset(QGroupBox):
@@ -442,6 +516,12 @@ class PanelAumentoDataset(QGroupBox):
         self.lbl_estado_modelo.establecer("fa5s.times-circle", "Modelo FastGAN: No entrenado",
                                           color="#EF4444", negrita=True, tam_fuente=12)
         layout.addWidget(self.lbl_estado_modelo)
+
+        # Clase activa seleccionada
+        self.lbl_clase_activa = NotaIcono(compacta=True, tam_icono=12)
+        self.lbl_clase_activa.establecer("fa5s.tag", "Clase activa: Ninguna seleccionada",
+                                         color="#64748B", fondo="rgba(100, 116, 139, 0.12)")
+        layout.addWidget(self.lbl_clase_activa)
 
         # 1. Conteo Original
         layout.addWidget(QLabel("Imágenes originales en la clase:"))
@@ -546,9 +626,15 @@ class PanelAumentoDataset(QGroupBox):
             self.lbl_tiempo_aumento.setVisible(False)
         self._t_inicio_aumento = None
 
-    def actualizar_conteo_original(self, cantidad):
+    def actualizar_conteo_original(self, cantidad, clase_nombre=None):
         self.cant_original = max(0, cantidad)
         self.lbl_cant_original.setText(f"{self.cant_original} imágenes")
+        if clase_nombre and clase_nombre != "Sin clases detectadas":
+            self.lbl_clase_activa.establecer("fa5s.tag", f"Clase activa: {clase_nombre}",
+                                             color="#3B82F6", fondo="rgba(59, 130, 246, 0.14)", negrita=True)
+        else:
+            self.lbl_clase_activa.establecer("fa5s.tag", "Clase activa: Ninguna seleccionada",
+                                             color="#64748B", fondo="rgba(100, 116, 139, 0.12)")
         self._recalcular_sinteticas()
 
     def set_estado_modelo_listo(self, listo=True):

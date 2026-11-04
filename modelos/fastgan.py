@@ -4,8 +4,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
-import traceback
 from torchvision.utils import save_image
+
+from config import CONFIG
+from utils.gestor_logs import obtener_logger
+
+logger = obtener_logger("FastGAN")
+_RUTAS = CONFIG.get("RUTAS", {})
 
 
 # =============================================================================
@@ -382,7 +387,9 @@ class EntrenadorFastGAN:
             z_in = z_in.clamp(-2.0, 2.0) * truncation_psi
         return self.generador_ema(z_in)
 
-    def guardar_checkpoint(self, epoca, ruta_dir="./datos/resultados/checkpoints_fastgan"):
+    def guardar_checkpoint(self, epoca, ruta_dir=None):
+        if ruta_dir is None:
+            ruta_dir = _RUTAS.get("CHECKPOINTS_FASTGAN", "./datos/resultados/checkpoints_fastgan")
         if not self._ema_bn_calibrado:
             self._calibrar_bn_ema()
         os.makedirs(ruta_dir, exist_ok=True)
@@ -397,7 +404,7 @@ class EntrenadorFastGAN:
             'opt_gen_state_dict': self.opt_gen.state_dict(),
             'opt_dis_state_dict': self.opt_dis.state_dict(),
         }, ruta)
-        print(f"[FastGAN] Checkpoint guardado en: {ruta}")
+        logger.info("Checkpoint guardado en: %s", ruta)
 
         try:
             ckpts = [
@@ -407,8 +414,8 @@ class EntrenadorFastGAN:
             ckpts.sort(key=lambda p: os.path.getmtime(p))
             for viejo in ckpts[:-5]:
                 os.remove(viejo)
-        except Exception:
-            pass
+        except (OSError, PermissionError) as exc:
+            logger.debug("No se pudo eliminar checkpoint antiguo: %s", exc)
         return ruta
 
     def cargar_checkpoint(self, ruta):
@@ -427,7 +434,7 @@ class EntrenadorFastGAN:
             self.discriminador.load_state_dict(checkpoint['dis_state_dict'], strict=False)
         self.pasos_totales = checkpoint.get('pasos_totales', 0)
         self._calibrar_bn_ema()
-        print(f"[FastGAN] Checkpoint cargado desde: {ruta}")
+        logger.info("Checkpoint cargado desde: %s", ruta)
         return checkpoint['epoca']
 
     def entrenar_epoca(self, cargador_datos, epoca_actual, total_epocas, abort_callback=None):
@@ -481,11 +488,13 @@ class EntrenadorFastGAN:
 
         return loss_G_avg, loss_D_avg
 
-    def generar_lote_sintetico(self, cantidad=500, ruta_destino="./datos/datasets/augmented",
+    def generar_lote_sintetico(self, cantidad=500, ruta_destino=None,
                                clase_nombre="clase_01", batch_size=32, callback_progreso=None):
         """
         Genera N imágenes sintéticas de alta fidelidad con el generador EMA y las guarda en disco.
         """
+        if ruta_destino is None:
+            ruta_destino = _RUTAS.get("AMPLIADO_BASE", "./datos/datasets/augmented")
         if clase_nombre:
             ruta_destino = os.path.join(ruta_destino, clase_nombre)
 
@@ -512,7 +521,7 @@ class EntrenadorFastGAN:
 
                 generadas += tamano_batch_actual
 
-        print(f"[FastGAN] Generadas {len(rutas_guardadas)} imágenes sintéticas únicas en: {ruta_destino}")
+        logger.info("Generadas %d imágenes sintéticas únicas en: %s", len(rutas_guardadas), ruta_destino)
         return rutas_guardadas
 
     # Alias para compatibilidad

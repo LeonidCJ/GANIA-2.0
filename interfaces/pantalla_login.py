@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-                             QLineEdit, QPushButton, QFrame, QGraphicsDropShadowEffect)
+                             QLineEdit, QPushButton, QFrame)
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QColor
 import qtawesome as qta
+from interfaces.controles_personalizados import NotaIcono
 from utils.gestor_logs import obtener_logger
 
 logger = obtener_logger("UI.Login")
@@ -53,23 +53,35 @@ class PantallaLogin(QWidget):
         self.input_id = QLineEdit()
         self.input_id.setPlaceholderText("Ej: P001 o Tu Nombre")
         self.input_id.setFixedHeight(45)
+        card_layout.addWidget(self.input_id)
+
+        self.lbl_aviso_login = NotaIcono(compacta=True, tam_icono=12)
+        self.lbl_aviso_login.establecer("fa5s.exclamation-circle", "Ingresa un nombre o identificador para continuar.", color="#EF4444")
+        self.lbl_aviso_login.setVisible(False)
+        card_layout.addWidget(self.lbl_aviso_login)
 
         # Cargar memoria
         if self.config_previa:
             self.input_id.setText(self.config_previa.get("usuario_id", ""))
             logger.info(f"ID recuperado: {self.input_id.text()}")
 
-        card_layout.addWidget(self.input_id)
+        self.input_id.returnPressed.connect(self.intentar_login)
+        self.input_id.textChanged.connect(self._limpiar_validacion)
+
         card_layout.addStretch()
 
         # Botón Acceder
-        self.btn_acceder = QPushButton("Acceder al Entorno")
+        self.btn_acceder = QPushButton(" Acceder al Entorno")
         self.btn_acceder.setIcon(qta.icon("fa5s.sign-in-alt", color="white"))
         self.btn_acceder.setFixedHeight(50)
         self.btn_acceder.clicked.connect(self.intentar_login)
         card_layout.addWidget(self.btn_acceder)
 
         layout_principal.addWidget(self.card)
+
+    def _limpiar_validacion(self):
+        self.input_id.setStyleSheet("")
+        self.lbl_aviso_login.setVisible(False)
 
     def intentar_login(self):
         usuario = self.input_id.text().strip()
@@ -78,3 +90,5 @@ class PantallaLogin(QWidget):
             self.senal_login_exitoso.emit(usuario, "")
         else:
             self.input_id.setStyleSheet("border: 2px solid #EF4444;")
+            self.lbl_aviso_login.setVisible(True)
+            self.input_id.setFocus()

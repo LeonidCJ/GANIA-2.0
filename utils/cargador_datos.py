@@ -10,6 +10,9 @@ from torchvision import datasets, transforms
 from PIL import Image
 
 from utils.adaptadores_dataset import GestorPreparacionDataset, validar_imagen
+from utils.gestor_logs import obtener_logger
+
+logger = obtener_logger("Cargador")
 
 EXTENSIONES_VALIDAS = ('.png', '.jpg', '.jpeg', '.webp')
 
@@ -86,11 +89,11 @@ def extraer_archivo_comprimido(ruta_archivo, ruta_destino="./datos/datasets/zip_
         import tarfile
         with tarfile.open(ruta_archivo, 'r:*') as tar_ref:
             tar_ref.extractall(path=ruta_destino)
-        print(f"[Cargador] Archivo TAR/TGZ extraído en: {ruta_destino}")
+        logger.info(f"Archivo TAR/TGZ extraído en: {ruta_destino}")
     else:
         with zipfile.ZipFile(ruta_archivo, 'r') as zip_ref:
             zip_ref.extractall(ruta_destino)
-        print(f"[Cargador] Archivo ZIP extraído en: {ruta_destino}")
+        logger.info(f"Archivo ZIP extraído en: {ruta_destino}")
 
     return resolver_subcarpeta_raiz(ruta_destino)
 
@@ -178,7 +181,6 @@ class DatasetClaseEspecifica(Dataset):
                 if os.path.isfile(ruta_completa) and validar_imagen_valida(ruta_completa):
                     self.rutas.append(ruta_completa)
 
-        # Transformación base que se ejecuta una sola vez al cargar en RAM
         # Transformación base que se ejecuta una sola vez al cargar en RAM (preservando proporción)
         self.imgs = self.rutas
         self.tam_cache = int(round(tamano_imagen * 1.125)) if para_entrenamiento else tamano_imagen
@@ -196,7 +198,7 @@ class DatasetClaseEspecifica(Dataset):
                 try:
                     with Image.open(r) as img:
                         self.cache_tensors.append(tf_base(img.convert('RGB')))
-                except Exception:
+                except (OSError, ValueError):
                     pass
         else:
             self.tf_fallback = obtener_transformaciones(tamano_imagen, normalizar_fastgan=True, para_entrenamiento=para_entrenamiento)
@@ -262,7 +264,7 @@ def cargar_imagenes_reales_clase(ruta_dataset, clase_seleccionada=None, tamano_i
                 ])
                 img_resized = tf_real(img.convert('RGB'))
                 imagenes_np.append(np.asarray(img_resized, dtype=np.uint8))
-        except Exception:
+        except (OSError, ValueError):
             continue
 
     return imagenes_np
@@ -281,7 +283,7 @@ def crear_cargador_fastgan_clase(
     Soporta `iteraciones_por_epoca` mediante RandomSampler con reemplazo para datasets few-shot.
     """
     if not os.path.exists(ruta_dataset):
-        print(f"[Cargador] Ruta {ruta_dataset} no encontrada. Usando datos fallback.")
+        logger.warning(f"Ruta {ruta_dataset} no encontrada. Usando datos fallback.")
         return crear_dataloader_fallback(batch_size, tamano_imagen)
 
     try:
@@ -289,7 +291,7 @@ def crear_cargador_fastgan_clase(
         dataset = DatasetClaseEspecifica(dir_clase, tamano_imagen=tamano_imagen, para_entrenamiento=True)
 
         if len(dataset) == 0:
-            print(f"[Cargador] No se encontraron imágenes válidas en {dir_clase}. Usando fallback.")
+            logger.warning(f"No se encontraron imágenes válidas en {dir_clase}. Usando fallback.")
             return crear_dataloader_fallback(batch_size, tamano_imagen)
 
         if limite_imagenes and len(dataset) > limite_imagenes:
@@ -305,7 +307,7 @@ def crear_cargador_fastgan_clase(
         return DataLoader(dataset, batch_size=batch_efectivo, shuffle=True, drop_last=False)
 
     except Exception as e:
-        print(f"[Cargador] Error cargando clase '{clase_seleccionada}' ({e}). Usando fallback.")
+        logger.warning(f"Error cargando clase '{clase_seleccionada}' ({e}). Usando fallback.")
         return crear_dataloader_fallback(batch_size, tamano_imagen)
 
 
@@ -345,12 +347,6 @@ def crear_cargadores_clasificacion(ruta_dataset, batch_size=32, tamano_imagen=64
     loader_tr = DataLoader(ds_train, batch_size=batch_size, shuffle=True)
     loader_te = DataLoader(ds_test, batch_size=batch_size, shuffle=False)
     return loader_tr, loader_te, n_clases
-
-
-# Aliases de compatibilidad
-_resolver_dir_clase = _resolver_directorio_clase
-crear_cargador_dcgan_clase = crear_cargador_fastgan_clase
-crear_cargador_dcgan = crear_cargador_fastgan
 
 
 def crear_dataloader_fallback(batch_size, size=64):

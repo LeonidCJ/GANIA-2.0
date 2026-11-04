@@ -9,6 +9,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy import linalg
 
+from utils.gestor_logs import obtener_logger
+
+logger = obtener_logger("Metricas")
+
 _extractor_cache = None
 
 
@@ -23,9 +27,9 @@ def _obtener_extractor(dispositivo="cpu"):
             for p in extractor.parameters():
                 p.requires_grad_(False)
             _extractor_cache = extractor
-            print("[Métricas] Extractor ResNet18 cargado correctamente para FID/KID.")
+            logger.info("Extractor ResNet18 cargado correctamente para FID/KID.")
         except Exception as e:
-            print(f"[Métricas] No se pudo cargar ResNet18: {e}.")
+            logger.warning(f"No se pudo cargar ResNet18: {e}.")
             _extractor_cache = None
     return _extractor_cache
 
@@ -184,7 +188,7 @@ def calcular_metricas_calidad(muestras_reales, muestras_falsas, dispositivo="cpu
     try:
         feats_falsas = _extraer_caracteristicas(muestras_falsas, dispositivo)
     except Exception as e:
-        print(f"[Métricas] Error extrayendo características: {e}")
+        logger.warning(f"Error extrayendo características: {e}")
         return resultado
 
     if feats_reales is None and muestras_reales and len(muestras_reales) >= 5:
@@ -202,13 +206,13 @@ def calcular_metricas_calidad(muestras_reales, muestras_falsas, dispositivo="cpu
         try:
             resultado["kid"] = round(calcular_kid(feats_reales, feats_falsas) * 1000.0, 2)
         except Exception as e:
-            print(f"[Métricas] Error calculando KID: {e}")
+            logger.warning(f"Error calculando KID: {e}")
             resultado["kid"] = "Error"
 
         try:
             resultado["fid"] = round(calcular_fid(feats_reales, feats_falsas), 2)
         except Exception as e:
-            print(f"[Métricas] Error calculando FID: {e}")
+            logger.warning(f"Error calculando FID: {e}")
             resultado["fid"] = "Error"
     else:
         diversidad_valor, flag_collapse = estimar_diversidad(muestras_falsas)

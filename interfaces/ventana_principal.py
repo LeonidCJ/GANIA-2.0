@@ -1,9 +1,6 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime
 import os
-from PIL import Image
-import numpy as np
-import traceback
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QStatusBar, QTextEdit, QMessageBox, QStackedWidget, QFrame,
                              QLabel, QPushButton, QScrollArea, QGraphicsDropShadowEffect)
@@ -14,22 +11,20 @@ import qtawesome as qta
 
 from interfaces.estilos import ESTILO_OSCURO, ESTILO_CLARO
 from interfaces.controles_personalizados import ToggleTemaNeumorfico
-from interfaces.panel_entrenamiento import (PanelConfiguracionDataset, PanelControlFastGAN, PanelControlDCGAN,
-                                         PanelAumentoDataset)
+from interfaces.panel_entrenamiento import (PanelConfiguracionDataset, PanelControlFastGAN,
+                                            PanelAumentoDataset)
 from interfaces.panel_resultados import (PanelVisualizacion, PanelGaleriaSinteticas,
-                                         PanelEstadisticasFastGAN, PanelEstadisticasDCGAN)
+                                         PanelEstadisticasFastGAN)
 from interfaces.pantalla_login import PantallaLogin
 from interfaces.pantalla_bienvenida import PantallaBienvenida
 
 from utils.gestor_configuracion import cargar_config_usuario, guardar_config_usuario
 from utils.gestor_logs import configurar_logging, obtener_logger
 from utils.gestor_resultados import crear_estructura_resultados
-from utils.tensor_utils import tensor_to_numpy
 from utils.dispositivo import obtener_dispositivo
 
 from modelos.fastgan import EntrenadorFastGAN
-from aplicacion.sistema_gania import SistemaGania, WorkerFastGAN, WorkerDCGAN, WorkerGeneracionMasiva
-from config import CONFIG
+from aplicacion.sistema_gania import SistemaGania, WorkerFastGAN, WorkerGeneracionMasiva
 
 configurar_logging()
 logger = obtener_logger("Interfaz")
@@ -98,9 +93,9 @@ class VentanaGAN(QMainWindow):
         # 1. Estado del Sistema
         self.sistema = SistemaGania()
         self.fastgan = None
-        self.dcgan = None
         self.usuario_id = "Investigador"
         self.ruta_dataset_ampliado = None
+        self._tema_oscuro = False
 
         # 2. Configurar Interfaz
         self.configurar_interfaz()
@@ -123,7 +118,21 @@ class VentanaGAN(QMainWindow):
         self.layout_base.setContentsMargins(0, 0, 0, 0)
         self.layout_base.setSpacing(0)
 
-        # --- HEADER PRINCIPAL ---
+        self._crear_header()
+
+        self.pantallas_stack = QStackedWidget()
+        self.layout_base.addWidget(self.pantallas_stack)
+
+        self._crear_pantalla_dashboard()
+        self._crear_pantalla_entrenamiento()
+        self._crear_pantalla_aumento()
+
+        self.panel_dataset.selector_clase.currentIndexChanged.connect(self.validar_inicio_entrenamiento)
+        self._configurar_barra_estado()
+        self.validar_inicio_entrenamiento()
+        self.cambiar_tema(False)
+
+    def _crear_header(self):
         self.header = QFrame()
         self.header.setFixedHeight(70)
         self.header.setObjectName("MainHeader")
@@ -136,7 +145,6 @@ class VentanaGAN(QMainWindow):
         self.lbl_pantalla_actual = QLabel("|  PIPELINE EXPERIMENTAL")
         self.lbl_pantalla_actual.setStyleSheet("font-size: 13px; font-weight: 500; color: #94A3B8; margin-left: 10px;")
 
-        # Menú Superior de Navegación
         self.btn_nav_home = QPushButton(" Inicio")
         self.btn_nav_home.setIcon(qta.icon("fa5s.home", color="white", color_active="white", color_disabled="white"))
         self.btn_nav_home.clicked.connect(lambda: self.cambiar_pantalla(2, "Dashboard Pipeline"))
@@ -163,12 +171,7 @@ class VentanaGAN(QMainWindow):
         layout_h.addWidget(self.toggle_tema)
         self.layout_base.addWidget(self.header)
 
-        self.pantallas_stack = QStackedWidget()
-        self.layout_base.addWidget(self.pantallas_stack)
-
-
-        # 1. PANTALLA DASHBOARD (2) - Vista General del Pipeline
-
+    def _crear_pantalla_dashboard(self):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -182,7 +185,6 @@ class VentanaGAN(QMainWindow):
         lbl_welcome.setObjectName("WelcomeTitle")
         layout_dash.addWidget(lbl_welcome)
 
-        # Tarjetas Consolidadas
         layout_dash.addWidget(CardPipeline(
             "fa5s.brain", "1. Configuración de Dataset y Entrenamiento FastGAN",
             "Carga de datos, detección de clases y entrenamiento exclusivo por clase.",
@@ -198,12 +200,10 @@ class VentanaGAN(QMainWindow):
         scroll.setWidget(dash_content)
         self.pantallas_stack.addWidget(scroll)
 
-        # 2. PANTALLA ENTRENAMIENTO FASTGAN (3)
-
+    def _crear_pantalla_entrenamiento(self):
         self.pantalla_fastgan = QWidget()
         layout_fastgan = QHBoxLayout(self.pantalla_fastgan)
 
-        # Panel Izquierdo: Controles
         self.panel_dataset = PanelConfiguracionDataset()
         self.panel_control_fastgan = PanelControlFastGAN()
         self.panel_control_fastgan.senal_iniciar_fastgan.connect(self.iniciar_entrenamiento_fastgan)
@@ -222,7 +222,6 @@ class VentanaGAN(QMainWindow):
         scroll_izq.setWidget(cont_izq)
         layout_fastgan.addWidget(scroll_izq)
 
-        # Panel Derecho: Visualización y Gráficos (Rejilla de 3x3 durante entrenamiento)
         der = QVBoxLayout()
         self.panel_vis_fastgan = PanelVisualizacion("Muestras Sintéticas FastGAN (Rejilla 3x3)")
         self.stats_fastgan = PanelEstadisticasFastGAN()
@@ -241,8 +240,7 @@ class VentanaGAN(QMainWindow):
 
         self.pantallas_stack.addWidget(self.pantalla_fastgan)
 
-        # 3. PANTALLA AUMENTO DE DATASET (4)
-
+    def _crear_pantalla_aumento(self):
         self.pantalla_aumento = QWidget()
         layout_aumento = QHBoxLayout(self.pantalla_aumento)
 
@@ -260,7 +258,6 @@ class VentanaGAN(QMainWindow):
         scroll_aum.setWidget(cont_aum)
         layout_aumento.addWidget(scroll_aum)
 
-        # Vista derecha: Galería de Muestras Sintéticas Individuales
         der_aum = QVBoxLayout()
         self.panel_galeria_aumento = PanelGaleriaSinteticas("Galería de Muestras Sintéticas Generadas")
         der_aum.addWidget(self.panel_galeria_aumento)
@@ -268,8 +265,7 @@ class VentanaGAN(QMainWindow):
 
         self.pantallas_stack.addWidget(self.pantalla_aumento)
 
-        self.panel_dataset.selector_clase.currentIndexChanged.connect(self.validar_inicio_entrenamiento)
-
+    def _configurar_barra_estado(self):
         self.barra_estado = QStatusBar()
         self.setStatusBar(self.barra_estado)
 
@@ -279,15 +275,32 @@ class VentanaGAN(QMainWindow):
             info_hw = "Dispositivo activo: CPU (No se detectó GPU CUDA)"
         self.barra_estado.showMessage(info_hw)
 
-        self.cambiar_tema(False)
+    def _actualizar_botones_nav(self):
+        indice = self.pantallas_stack.currentIndex()
+        definiciones = [
+            (2, self.btn_nav_home, "fa5s.home"),
+            (3, self.btn_nav_fastgan, "fa5s.brain"),
+            (4, self.btn_nav_aumento, "fa5s.magic"),
+        ]
+        for idx_nav, btn, ico_name in definiciones:
+            activo = (idx_nav == indice)
+            btn.setObjectName("NavActivo" if activo else "NavInactivo")
+            color_ico = "white" if activo else ("#CBD5E1" if self._tema_oscuro else "#475569")
+            btn.setIcon(qta.icon(ico_name, color=color_ico, color_active="white"))
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
 
     def cambiar_pantalla(self, indice, titulo):
         self.pantallas_stack.setCurrentIndex(indice)
         self.lbl_pantalla_actual.setText(f"|  {titulo.upper()}")
         self.header.setVisible(indice >= 2)
+        self._actualizar_botones_nav()
 
     def cambiar_tema(self, oscuro):
+        self._tema_oscuro = bool(oscuro)
         self.setStyleSheet(ESTILO_OSCURO if oscuro else ESTILO_CLARO)
+        if hasattr(self, "btn_nav_home"):
+            self._actualizar_botones_nav()
 
     def escribir_log(self, mensaje):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -309,7 +322,7 @@ class VentanaGAN(QMainWindow):
         clase_sel = self.panel_dataset.obtener_clase_seleccionada()
         cant_orig = self.panel_dataset.obtener_cantidad_original_clase()
 
-        self.panel_control_aumento.actualizar_conteo_original(cant_orig)
+        self.panel_control_aumento.actualizar_conteo_original(cant_orig, clase_sel)
 
         habilitar = (
             ruta_ds is not None and
@@ -318,6 +331,13 @@ class VentanaGAN(QMainWindow):
             clase_sel != "Sin clases detectadas"
         )
         self.panel_control_fastgan.btn_iniciar.setEnabled(habilitar)
+
+    def _set_estado_controles_entrenamiento(self, entrenando):
+        """Activa o bloquea de forma coherente los selectores e hiperparámetros durante el entrenamiento."""
+        self.panel_dataset._set_controles_carga_habilitados(not entrenando)
+        self.panel_control_fastgan.set_controles_entrenamiento_habilitados(not entrenando)
+        self.panel_control_fastgan.btn_iniciar.setEnabled(not entrenando)
+        self.panel_control_fastgan.btn_detener.setEnabled(entrenando)
 
     # =========================================================================
     # EJECUCIÓN 1: ENTRENAMIENTO DE FASTGAN POR CLASE
@@ -334,12 +354,6 @@ class VentanaGAN(QMainWindow):
         if not clase_sel or clase_sel == "Sin clases detectadas":
             QMessageBox.warning(self, "Clase Inválida", "Por favor selecciona una clase válida para entrenar la red FastGAN.")
             return
-
-        self.panel_control_fastgan.btn_iniciar.setEnabled(False)
-        self.panel_control_fastgan.btn_detener.setEnabled(True)
-        self.panel_control_aumento.set_estado_modelo_listo(False)
-        self.stats_fastgan.limpiar()
-        self.log_eventos.clear()
 
         lr = self.panel_control_fastgan.spin_lr.value()
         batch = self.panel_control_fastgan.spin_batch.value()
@@ -364,16 +378,20 @@ class VentanaGAN(QMainWindow):
             msg.exec_()
 
             if msg.clickedButton() == btn_cancelar:
-                self.panel_control_fastgan.btn_iniciar.setEnabled(True)
-                self.panel_control_fastgan.btn_detener.setEnabled(False)
                 return
             elif msg.clickedButton() == btn_cambiar:
                 self.panel_control_fastgan.combo_resolucion.setCurrentIndex(0)
                 resolucion = 64
+
+        self._set_estado_controles_entrenamiento(True)
+        self.panel_control_fastgan.iniciar_progreso_entrenamiento(epocas)
+        self.panel_control_aumento.set_estado_modelo_listo(False)
+        self.stats_fastgan.limpiar()
+        self.log_eventos.clear()
+
         self.escribir_log(f"Dispositivo de cómputo detectado: {str(dispositivo_actual).upper()}")
         self.escribir_log(f"Iniciando entrenamiento FastGAN ({resolucion}x{resolucion} px) para la clase '{clase_sel}'...")
         self.fastgan = EntrenadorFastGAN(dispositivo=dispositivo_actual, lr=lr, tamano_img=resolucion)
-        self.dcgan = self.fastgan
 
         self.worker_fastgan = WorkerFastGAN(
             modelo_fastgan=self.fastgan,
@@ -386,8 +404,14 @@ class VentanaGAN(QMainWindow):
         self.worker_fastgan.finalizado_epoca.connect(self.on_fastgan_epoca_terminada)
         self.worker_fastgan.entrenamiento_completado.connect(self.on_fastgan_completado)
         self.worker_fastgan.senal_log.connect(self.escribir_log)
-        self.worker_fastgan.error.connect(lambda e: self.barra_estado.showMessage(f"Error: {e}"))
+        self.worker_fastgan.error.connect(self._on_error_fastgan)
         self.worker_fastgan.start()
+
+    def _on_error_fastgan(self, msj_error):
+        self._set_estado_controles_entrenamiento(False)
+        self.panel_control_fastgan.finalizar_progreso_entrenamiento(exito=False)
+        self.barra_estado.showMessage(f"Error: {msj_error}")
+        self.escribir_log(f"Error en entrenamiento: {msj_error}")
 
     def on_fastgan_epoca_terminada(self, epoca, lg, ld, datos):
         img = datos.get('img') if isinstance(datos, dict) else datos
@@ -414,25 +438,34 @@ class VentanaGAN(QMainWindow):
         self.stats_fastgan.actualizar(epoca, lg, ld, fid=fid_val, diversidad=div_val)
 
         max_ep = max(1, self.panel_control_fastgan.spin_epocas.value())
-        self.panel_control_fastgan.barra_progreso.setValue(int((epoca / max_ep) * 100))
+        self.panel_control_fastgan.actualizar_progreso_entrenamiento(epoca, max_ep)
 
     def on_fastgan_completado(self, msj):
         self.escribir_log(msj)
-        self.panel_control_fastgan.btn_iniciar.setEnabled(True)
-        self.panel_control_fastgan.btn_detener.setEnabled(False)
+        self._set_estado_controles_entrenamiento(False)
+        self.panel_control_fastgan.finalizar_progreso_entrenamiento(exito=True)
         self.panel_control_aumento.set_estado_modelo_listo(True)
         clase_sel = self.panel_dataset.obtener_clase_seleccionada()
-        QMessageBox.information(
-            self, "FastGAN Entrenada",
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Information)
+        msg.setWindowTitle("FastGAN Entrenada")
+        msg.setText(
             f"FastGAN entrenada y guardada exitosamente para la clase '{clase_sel}'.\n\n"
             f"El modelo está listo para generar imágenes sintéticas de alta fidelidad."
         )
+        btn_ir_aumento = msg.addButton("Ir a Aumento de Dataset", QMessageBox.AcceptRole)
+        msg.addButton("Permanecer aquí", QMessageBox.RejectRole)
+        msg.exec_()
+
+        if msg.clickedButton() == btn_ir_aumento:
+            self.cambiar_pantalla(4, "Dataset Ampliado por Porcentaje")
 
     def detener_fastgan(self):
         if hasattr(self, 'worker_fastgan') and self.worker_fastgan.isRunning():
             self.worker_fastgan.abortar()
-            self.panel_control_fastgan.btn_iniciar.setEnabled(True)
-            self.panel_control_fastgan.btn_detener.setEnabled(False)
+            self._set_estado_controles_entrenamiento(False)
+            self.panel_control_fastgan.finalizar_progreso_entrenamiento(exito=False, detenido=True)
             self.escribir_log("Entrenamiento de FastGAN detenido por el usuario.")
 
     # =========================================================================

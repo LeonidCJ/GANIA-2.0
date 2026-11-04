@@ -140,7 +140,7 @@ class WorkerFastGAN(QThread):
         self._abortar = True
 
 
-WorkerDCGAN = WorkerFastGAN  # Alias para compatibilidad
+
 
 
 
