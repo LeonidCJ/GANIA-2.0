@@ -225,6 +225,8 @@ class AdaptadorEstructuraCarpeta(AdaptadorBase):
         return resumen
 
     def preparar(self):
+        if self.ruta_destino.exists() and self.ruta_origen.resolve() != self.ruta_destino.resolve():
+            shutil.rmtree(self.ruta_destino, ignore_errors=True)
         resumen = self.analizar()
         return str(self.ruta_origen), resumen
 

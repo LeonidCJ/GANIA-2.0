@@ -22,6 +22,7 @@ CONFIG = {
         "DATASETS_BASE": "./datos/datasets",
         "DATASET_ORIGINAL": "./datos/datasets/original",
         "DATASET_PREPARADO": "./datos/datasets/dataset_prepared",
+        "DATASET_PREPROCESADO": "./datos/datasets/preprocesadas",
         "DATASET_ZIP_EXTRAIDO": "./datos/datasets/zip_extraido",
         "DATASET_URL_EXTRAIDO": "./datos/datasets/url_extraido",
         "SINTETICAS_BASE": "./datos/datasets/synthetic",

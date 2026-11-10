@@ -22,6 +22,7 @@ from utils.gestor_configuracion import cargar_config_usuario, guardar_config_usu
 from utils.gestor_logs import configurar_logging, obtener_logger
 from utils.gestor_resultados import crear_estructura_resultados
 from utils.dispositivo import obtener_dispositivo
+from utils.cargador_datos import guardar_imagenes_preprocesadas_clase
 
 from modelos.fastgan import EntrenadorFastGAN
 from aplicacion.sistema_gania import SistemaGania, WorkerFastGAN, WorkerGeneracionMasiva
@@ -31,57 +32,141 @@ logger = obtener_logger("Interfaz")
 
 
 class CardPipeline(QFrame):
-    """Tarjeta interactiva para acceder a cada etapa del pipeline experimental."""
-    def __init__(self, icon_name, titulo, descripcion, color_borde="#3B82F6", callback=None):
+    """Tarjeta Claymórfica compacta y limpia para acceder a cada etapa del pipeline."""
+    def __init__(self, icon_name, titulo, descripcion, color_acento="#3B82F6",
+                 color_sombra="#1D4ED8", fondo_suave="rgba(59, 130, 246, 0.12)", callback=None):
         super().__init__()
         self.callback = callback
         self.setObjectName("ModuloCard")
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet(f"QFrame#ModuloCard {{ border-left: 6px solid {color_borde}; }}")
+        self.setMinimumHeight(105)
 
         self.shadow = QGraphicsDropShadowEffect(self)
-        self.shadow.setBlurRadius(12)
+        self.shadow.setBlurRadius(16)
         self.shadow.setXOffset(0)
         self.shadow.setYOffset(4)
-        self.shadow.setColor(QColor(0, 0, 0, 40))
+        self.shadow.setColor(QColor(15, 23, 42, 25))
         self.setGraphicsEffect(self.shadow)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 15, 20, 15)
-        layout.setSpacing(8)
+        layout_principal = QHBoxLayout(self)
+        layout_principal.setContentsMargins(8, 6, 10, 6)
+        layout_principal.setSpacing(16)
 
-        header = QHBoxLayout()
+        # 1. Barra de acento interna redondeada (evita el recorte curvo en las esquinas)
+        barra_acento = QFrame()
+        barra_acento.setFixedWidth(5)
+        barra_acento.setStyleSheet(f"background-color: {color_acento}; border-radius: 2px; border: none;")
+        layout_principal.addWidget(barra_acento)
+
+        # 2. Icono en contenedor suave Claymórfico
+        badge_icono = QFrame()
+        badge_icono.setFixedSize(48, 48)
+        badge_icono.setStyleSheet(
+            f"QFrame {{ background-color: {fondo_suave}; border-radius: 14px; border: none; }}"
+        )
+        l_badge = QVBoxLayout(badge_icono)
+        l_badge.setContentsMargins(0, 0, 0, 0)
         icon_lbl = QLabel()
-        icon_lbl.setPixmap(qta.icon(icon_name, color=color_borde).pixmap(32, 32))
-        icon_lbl.setStyleSheet("background: transparent;")
+        icon_lbl.setAlignment(Qt.AlignCenter)
+        icon_lbl.setPixmap(qta.icon(icon_name, color=color_acento).pixmap(24, 24))
+        icon_lbl.setStyleSheet("background: transparent; border: none;")
+        l_badge.addWidget(icon_lbl)
+        layout_principal.addWidget(badge_icono, 0, Qt.AlignVCenter)
 
+        # 3. Título y descripción breve (sin chips sobrecargados)
+        cuerpo = QVBoxLayout()
+        cuerpo.setSpacing(6)
+        cuerpo.setAlignment(Qt.AlignVCenter)
         title_lbl = QLabel(titulo)
-        title_lbl.setStyleSheet("font-size: 16px; font-weight: bold; background: transparent;")
-
-        header.addWidget(icon_lbl)
-        header.addWidget(title_lbl)
-        header.addStretch()
-        layout.addLayout(header)
-
+        title_lbl.setStyleSheet("font-size: 14px; font-weight: bold; background: transparent;")
         desc_lbl = QLabel(descripcion)
         desc_lbl.setWordWrap(True)
         desc_lbl.setStyleSheet("font-size: 12px; color: #64748B; background: transparent;")
-        layout.addWidget(desc_lbl)
+        cuerpo.addWidget(title_lbl)
+        cuerpo.addWidget(desc_lbl)
+        layout_principal.addLayout(cuerpo, 1)
 
-        footer = QHBoxLayout()
-        footer.addStretch()
-        lbl_etapa = QLabel("Ir a Etapa")
-        lbl_etapa.setStyleSheet("font-weight: bold; color: #3B82F6; background: transparent; font-size: 12px;")
-        lbl_ico_etapa = QLabel()
-        lbl_ico_etapa.setPixmap(qta.icon("fa5s.arrow-right", color="#3B82F6").pixmap(11, 11))
-        footer.addWidget(lbl_etapa)
-        footer.addWidget(lbl_ico_etapa)
-        layout.addLayout(footer)
+        # 4. Botón Claymórfico compacto a la derecha
+        self.btn_ir = QPushButton(" Ir a Etapa")
+        self.btn_ir.setCursor(Qt.PointingHandCursor)
+        self.btn_ir.setIcon(qta.icon("fa5s.arrow-right", color="white"))
+        self.btn_ir.setMinimumSize(142, 40)
+        self.btn_ir.setStyleSheet(
+            f"QPushButton {{ background-color: {color_acento}; color: white; border-radius: 12px; "
+            f"padding: 6px 14px; border: none; border-bottom: 3px solid {color_sombra}; "
+            f"font-weight: bold; font-size: 12px; }} "
+            f"QPushButton:pressed {{ border-bottom: 0px; margin-top: 3px; }}"
+        )
+        if self.callback:
+            self.btn_ir.clicked.connect(self.callback)
+        layout_principal.addWidget(self.btn_ir, 0, Qt.AlignVCenter)
 
     def mousePressEvent(self, event):
         if self.callback:
             self.callback()
         super().mousePressEvent(event)
+
+
+class CardResumenSesion(QFrame):
+    """Mini-tarjeta Claymórfica para mostrar métricas y estado en vivo de la sesión en el Dashboard."""
+    def __init__(self, icon_name, categoria, valor_inicial, detalle_inicial,
+                 color_acento="#3B82F6", fondo_suave="rgba(59, 130, 246, 0.12)"):
+        super().__init__()
+        self.setObjectName("ModuloCard")
+        self.setMinimumHeight(105)
+        self.color_acento = color_acento
+        self.fondo_suave = fondo_suave
+
+        self.shadow = QGraphicsDropShadowEffect(self)
+        self.shadow.setBlurRadius(14)
+        self.shadow.setXOffset(0)
+        self.shadow.setYOffset(3)
+        self.shadow.setColor(QColor(15, 23, 42, 20))
+        self.setGraphicsEffect(self.shadow)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(6)
+
+        fila_sup = QHBoxLayout()
+        fila_sup.setSpacing(10)
+
+        self.badge_ico = QFrame()
+        self.badge_ico.setFixedSize(34, 34)
+        self.badge_ico.setStyleSheet(
+            f"QFrame {{ background-color: {fondo_suave}; border-radius: 10px; border: none; }}"
+        )
+        l_ico = QVBoxLayout(self.badge_ico)
+        l_ico.setContentsMargins(0, 0, 0, 0)
+        self.lbl_ico = QLabel()
+        self.lbl_ico.setAlignment(Qt.AlignCenter)
+        self.lbl_ico.setPixmap(qta.icon(icon_name, color=color_acento).pixmap(17, 17))
+        self.lbl_ico.setStyleSheet("background: transparent; border: none;")
+        l_ico.addWidget(self.lbl_ico)
+
+        self.lbl_categoria = QLabel(categoria.upper())
+        self.lbl_categoria.setStyleSheet(
+            f"font-size: 10px; font-weight: 800; color: {color_acento}; background: transparent;"
+        )
+
+        fila_sup.addWidget(self.badge_ico)
+        fila_sup.addWidget(self.lbl_categoria)
+        fila_sup.addStretch()
+        layout.addLayout(fila_sup)
+
+        self.lbl_valor = QLabel(valor_inicial)
+        self.lbl_valor.setStyleSheet("font-size: 15px; font-weight: bold; background: transparent;")
+        layout.addWidget(self.lbl_valor)
+
+        self.lbl_detalle = QLabel(detalle_inicial)
+        self.lbl_detalle.setStyleSheet("font-size: 11px; color: #64748B; background: transparent;")
+        layout.addWidget(self.lbl_detalle)
+
+    def actualizar_datos(self, valor, detalle, icon_name=None):
+        self.lbl_valor.setText(valor)
+        self.lbl_detalle.setText(detalle)
+        if icon_name:
+            self.lbl_ico.setPixmap(qta.icon(icon_name, color=self.color_acento).pixmap(17, 17))
 
 
 class VentanaGAN(QMainWindow):
@@ -128,6 +213,7 @@ class VentanaGAN(QMainWindow):
         self._crear_pantalla_aumento()
 
         self.panel_dataset.selector_clase.currentIndexChanged.connect(self.validar_inicio_entrenamiento)
+        self.panel_control_fastgan.combo_resolucion.currentIndexChanged.connect(self.validar_inicio_entrenamiento)
         self._configurar_barra_estado()
         self.validar_inicio_entrenamiento()
         self.cambiar_tema(False)
@@ -166,7 +252,7 @@ class VentanaGAN(QMainWindow):
         layout_h.addWidget(self.lbl_pantalla_actual)
         layout_h.addStretch()
         for btn in self.nav_buttons:
-            btn.setFixedWidth(130)
+            btn.setMinimumWidth(135)
             layout_h.addWidget(btn)
         layout_h.addWidget(self.toggle_tema)
         self.layout_base.addWidget(self.header)
@@ -177,26 +263,82 @@ class VentanaGAN(QMainWindow):
         scroll.setFrameShape(QFrame.NoFrame)
         dash_content = QWidget()
         dash_content.setObjectName("DashboardContent")
-        layout_dash = QVBoxLayout(dash_content)
-        layout_dash.setContentsMargins(35, 30, 35, 30)
-        layout_dash.setSpacing(20)
+        layout_exterior = QVBoxLayout(dash_content)
+        layout_exterior.setContentsMargins(35, 30, 35, 30)
+
+        # Contenedor central acotado (900 px) para que las tarjetas tengan proporción limpia sin estirarse
+        contenedor_central = QWidget()
+        contenedor_central.setFixedWidth(900)
+        contenedor_central.setStyleSheet("background: transparent;")
+        layout_dash = QVBoxLayout(contenedor_central)
+        layout_dash.setContentsMargins(0, 0, 0, 0)
+        layout_dash.setSpacing(18)
 
         lbl_welcome = QLabel("Pipeline de Generación y Aumento con FastGAN")
         lbl_welcome.setObjectName("WelcomeTitle")
+        lbl_welcome.setStyleSheet("font-size: 24px; font-weight: bold;")
         layout_dash.addWidget(lbl_welcome)
 
         layout_dash.addWidget(CardPipeline(
-            "fa5s.brain", "1. Configuración de Dataset y Entrenamiento FastGAN",
-            "Carga de datos, detección de clases y entrenamiento exclusivo por clase.",
-            "#3B82F6", lambda: self.cambiar_pantalla(3, "Entrenamiento FastGAN por Clase")
+            icon_name="fa5s.brain",
+            titulo="1. Configuración de Dataset y Entrenamiento FastGAN",
+            descripcion="Carga de datos, detección de clases y entrenamiento exclusivo por clase.",
+            color_acento="#3B82F6",
+            color_sombra="#1D4ED8",
+            fondo_suave="rgba(59, 130, 246, 0.12)",
+            callback=lambda: self.cambiar_pantalla(3, "Entrenamiento FastGAN por Clase")
         ))
         layout_dash.addWidget(CardPipeline(
-            "fa5s.magic", "2. Aumento de Dataset por Porcentaje",
-            "Generación sintética por porcentaje y exportación del dataset ampliado.",
-            "#10B981", lambda: self.cambiar_pantalla(4, "Dataset Ampliado por Porcentaje")
+            icon_name="fa5s.magic",
+            titulo="2. Aumento de Dataset por Porcentaje",
+            descripcion="Generación sintética por porcentaje y exportación del dataset ampliado.",
+            color_acento="#10B981",
+            color_sombra="#059669",
+            fondo_suave="rgba(16, 185, 129, 0.12)",
+            callback=lambda: self.cambiar_pantalla(4, "Dataset Ampliado por Porcentaje")
         ))
 
-        layout_dash.addStretch()
+        # Sección inferior: Resumen en vivo de la sesión (3 mini-tarjetas en fila)
+        lbl_sec_resumen = QLabel("Estado de la Sesión Actual")
+        lbl_sec_resumen.setStyleSheet("font-size: 13px; font-weight: bold; color: #64748B; margin-top: 8px;")
+        layout_dash.addWidget(lbl_sec_resumen)
+
+        fila_resumen = QHBoxLayout()
+        fila_resumen.setSpacing(16)
+
+        self.card_resumen_dataset = CardResumenSesion(
+            icon_name="fa5s.database",
+            categoria="Dataset Cargado",
+            valor_inicial="Sin dataset",
+            detalle_inicial="Esperando selección de clase",
+            color_acento="#3B82F6",
+            fondo_suave="rgba(59, 130, 246, 0.12)"
+        )
+        self.card_resumen_fid = CardResumenSesion(
+            icon_name="fa5s.chart-line",
+            categoria="Entrenamiento y FID",
+            valor_inicial="En espera",
+            detalle_inicial="FID: --  |  Diversidad: --",
+            color_acento="#8B5CF6",
+            fondo_suave="rgba(139, 92, 246, 0.12)"
+        )
+        self.card_resumen_sinteticas = CardResumenSesion(
+            icon_name="fa5s.layer-group",
+            categoria="Sintéticas Generadas",
+            valor_inicial="0 imágenes",
+            detalle_inicial="Dataset ampliado pendiente",
+            color_acento="#10B981",
+            fondo_suave="rgba(16, 185, 129, 0.12)"
+        )
+
+        fila_resumen.addWidget(self.card_resumen_dataset, 1)
+        fila_resumen.addWidget(self.card_resumen_fid, 1)
+        fila_resumen.addWidget(self.card_resumen_sinteticas, 1)
+        layout_dash.addLayout(fila_resumen)
+
+        layout_exterior.addStretch(1)
+        layout_exterior.addWidget(contenedor_central, 0, Qt.AlignHCenter)
+        layout_exterior.addStretch(2)
         scroll.setWidget(dash_content)
         self.pantallas_stack.addWidget(scroll)
 
@@ -332,6 +474,23 @@ class VentanaGAN(QMainWindow):
         )
         self.panel_control_fastgan.btn_iniciar.setEnabled(habilitar)
 
+        if habilitar:
+            res_actual = self.panel_control_fastgan.obtener_resolucion()
+            guardar_imagenes_preprocesadas_clase(ruta_ds, clase_sel, tamano_imagen=res_actual)
+
+        if hasattr(self, "card_resumen_dataset"):
+            if habilitar:
+                res_actual = self.panel_control_fastgan.obtener_resolucion()
+                self.card_resumen_dataset.actualizar_datos(
+                    f"Clase: {clase_sel}",
+                    f"{cant_orig} imágenes ({res_actual}x{res_actual} px)"
+                )
+            else:
+                self.card_resumen_dataset.actualizar_datos(
+                    "Sin dataset",
+                    "Esperando selección de clase"
+                )
+
     def _set_estado_controles_entrenamiento(self, entrenando):
         """Activa o bloquea de forma coherente los selectores e hiperparámetros durante el entrenamiento."""
         self.panel_dataset._set_controles_carga_habilitados(not entrenando)
@@ -440,12 +599,23 @@ class VentanaGAN(QMainWindow):
         max_ep = max(1, self.panel_control_fastgan.spin_epocas.value())
         self.panel_control_fastgan.actualizar_progreso_entrenamiento(epoca, max_ep)
 
+        if hasattr(self, "card_resumen_fid"):
+            txt_fid = f"{fid_val:.1f}" if fid_val is not None else "--"
+            txt_div = f"{div_val:.0f}%" if div_val is not None else "--"
+            if fid_val is not None or div_val is not None:
+                self._ultimo_resumen_metricas = f"FID: {txt_fid}  |  Diversidad: {txt_div}"
+            det = getattr(self, "_ultimo_resumen_metricas", "Calculando métricas...")
+            self.card_resumen_fid.actualizar_datos(f"Época {epoca} / {max_ep}", det)
+
     def on_fastgan_completado(self, msj):
         self.escribir_log(msj)
         self._set_estado_controles_entrenamiento(False)
         self.panel_control_fastgan.finalizar_progreso_entrenamiento(exito=True)
         self.panel_control_aumento.set_estado_modelo_listo(True)
         clase_sel = self.panel_dataset.obtener_clase_seleccionada()
+        if hasattr(self, "card_resumen_fid"):
+            det = getattr(self, "_ultimo_resumen_metricas", "Pesos EMA guardados")
+            self.card_resumen_fid.actualizar_datos(f"Listo ({clase_sel})", det)
 
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Information)
@@ -522,6 +692,11 @@ class VentanaGAN(QMainWindow):
 
         self.panel_control_aumento.finalizar_progreso_aumento(exito=True)
         self.panel_control_aumento.btn_generar_aumento.setEnabled(True)
+        if hasattr(self, "card_resumen_sinteticas"):
+            self.card_resumen_sinteticas.actualizar_datos(
+                f"+{cant_sint} sintéticas",
+                f"Total ampliado: {total} imágenes ({clase_sel})"
+            )
 
         self.escribir_log(f"Dataset Ampliado creado exitosamente en {ruta_ampliado}")
         QMessageBox.information(

@@ -44,11 +44,18 @@ def resolver_carpeta_train_o_base(ruta_dataset):
     return ruta_base
 
 
+def limpiar_imagenes_preprocesadas(ruta_base="./datos/datasets/preprocesadas"):
+    """Elimina las imágenes preprocesadas previas cuando se cambia de dataset, clase o resolución."""
+    if os.path.exists(ruta_base):
+        shutil.rmtree(ruta_base, ignore_errors=True)
+
+
 def preparar_y_analizar_dataset(ruta_dataset):
     """
     Ejecuta el gestor de preparación de dataset (Caso A, B, C o D),
     retornando la ruta estandarizada lista y un resumen completo.
     """
+    limpiar_imagenes_preprocesadas()
     if not os.path.exists(ruta_dataset):
         return ruta_dataset, {"formato": "Inexistente", "clases": {}, "train": {}, "invalidas": 0}
 
@@ -240,6 +247,57 @@ def _resolver_directorio_clase(ruta_dataset, clase_seleccionada=None):
 _resolver_dir_clase = _resolver_directorio_clase
 
 
+def guardar_imagenes_preprocesadas_clase(
+    ruta_dataset,
+    clase_seleccionada=None,
+    tamano_imagen=64,
+    ruta_base="./datos/datasets/preprocesadas"
+):
+    """
+    Redimensiona las imágenes reales de la clase seleccionada a la resolución elegida
+    (64x64, 128x128 o 256x256 px) y las guarda en disco para inspección/documentación.
+    Limpia cualquier preprocesamiento anterior para no acumular archivos de otros datasets.
+    """
+    limpiar_imagenes_preprocesadas(ruta_base)
+    if not ruta_dataset or not os.path.exists(ruta_dataset):
+        return None
+
+    dir_clase = _resolver_directorio_clase(ruta_dataset, clase_seleccionada)
+    if not os.path.exists(dir_clase):
+        return None
+
+    archivos = [
+        f for f in sorted(os.listdir(dir_clase))
+        if os.path.isfile(os.path.join(dir_clase, f)) and validar_imagen_valida(os.path.join(dir_clase, f))
+    ]
+    if not archivos:
+        return None
+
+    nombre_clase = clase_seleccionada if (clase_seleccionada and clase_seleccionada not in ("Sin clases detectadas", "Todas")) else "clase_unica"
+    dir_destino = os.path.join(ruta_base, f"{nombre_clase}_{tamano_imagen}x{tamano_imagen}")
+    os.makedirs(dir_destino, exist_ok=True)
+
+    tf_resize = transforms.Compose([
+        transforms.Resize(tamano_imagen, interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.CenterCrop(tamano_imagen)
+    ])
+
+    guardadas = 0
+    for nombre in archivos:
+        ruta_orig = os.path.join(dir_clase, nombre)
+        try:
+            with Image.open(ruta_orig) as img:
+                img_proc = tf_resize(img.convert("RGB"))
+                img_proc.save(os.path.join(dir_destino, nombre))
+                guardadas += 1
+        except (OSError, ValueError):
+            continue
+
+    logger.info("Guardadas %d imágenes redimensionadas (%dx%d px) en: %s",
+                guardadas, tamano_imagen, tamano_imagen, dir_destino)
+    return dir_destino
+
+
 def cargar_imagenes_reales_clase(ruta_dataset, clase_seleccionada=None, tamano_imagen=64, max_imagenes=256):
     """
     Carga las imágenes reales de la clase seleccionada como lista de arrays numpy uint8 (RGB)
@@ -287,6 +345,7 @@ def crear_cargador_fastgan_clase(
         return crear_dataloader_fallback(batch_size, tamano_imagen)
 
     try:
+        guardar_imagenes_preprocesadas_clase(ruta_dataset, clase_seleccionada, tamano_imagen=tamano_imagen)
         dir_clase = _resolver_directorio_clase(ruta_dataset, clase_seleccionada)
         dataset = DatasetClaseEspecifica(dir_clase, tamano_imagen=tamano_imagen, para_entrenamiento=True)
 

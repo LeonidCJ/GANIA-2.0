@@ -88,11 +88,13 @@ ESTILO_OSCURO = """
     #ModuloCard {
         background-color: #1E293B;
         border: 1px solid #334155;
+        border-bottom: 4px solid #0F172A;
         border-radius: 20px;
         padding: 15px;
     }
     #ModuloCard:hover {
-        border-color: #3B82F6;
+        border: 1px solid #3B82F6;
+        border-bottom: 4px solid #1D4ED8;
     }
 
     /* Opciones y Selectores */
@@ -159,6 +161,7 @@ ESTILO_OSCURO = """
         background-color: #334155;
         color: #CBD5E1;
         border-bottom: 3px solid #1E293B;
+        padding: 8px 12px;
     }
     QPushButton#NavInactivo:hover {
         background-color: #475569;
@@ -168,6 +171,7 @@ ESTILO_OSCURO = """
         background-color: #3B82F6;
         color: #FFFFFF;
         border-bottom: 3px solid #1D4ED8;
+        padding: 8px 12px;
     }
 
     /* Inputs y SpinBoxes Integrados */
@@ -340,10 +344,14 @@ ESTILO_CLARO = """
     #ModuloCard {
         background-color: #FFFFFF;
         border: 1px solid #E2E8F0;
+        border-bottom: 4px solid #CBD5E1;
         border-radius: 20px;
         padding: 15px;
     }
-    #ModuloCard:hover { border-color: #3B82F6; }
+    #ModuloCard:hover {
+        border: 1px solid #3B82F6;
+        border-bottom: 4px solid #2563EB;
+    }
 
     /* Opciones y Selectores */
     QRadioButton, QCheckBox {
@@ -403,6 +411,7 @@ ESTILO_CLARO = """
         background-color: #E2E8F0;
         color: #475569;
         border-bottom: 3px solid #CBD5E1;
+        padding: 8px 12px;
     }
     QPushButton#NavInactivo:hover {
         background-color: #CBD5E1;
@@ -412,6 +421,7 @@ ESTILO_CLARO = """
         background-color: #3B82F6;
         color: #FFFFFF;
         border-bottom: 3px solid #1D4ED8;
+        padding: 8px 12px;
     }
 
     /* Inputs y SpinBoxes */
