@@ -46,7 +46,7 @@ _RUTA_DOWN_WHITE = os.path.join(_DIR_ICONOS, "chevron_down_white.png").replace("
 _RUTA_UP_MUTED = os.path.join(_DIR_ICONOS, "chevron_up_muted.png").replace("\\", "/")
 _RUTA_DOWN_MUTED = os.path.join(_DIR_ICONOS, "chevron_down_muted.png").replace("\\", "/")
 
-# --- ESTILO CLAYMÓRFICO PROFESIONAL (GANIA 2.0 - TESIS) ---
+# --- ESTILO CLAYMÓRFICO PROFESIONAL (GANIA - TESIS) ---
 
 ESTILO_OSCURO = """
     * {

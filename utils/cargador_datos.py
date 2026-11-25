@@ -251,13 +251,16 @@ def guardar_imagenes_preprocesadas_clase(
     ruta_dataset,
     clase_seleccionada=None,
     tamano_imagen=64,
-    ruta_base="./datos/datasets/preprocesadas"
+    ruta_base="./datos/datasets/preprocesadas",
+    dir_salida=None
 ):
     """
     Redimensiona las imágenes reales de la clase seleccionada a la resolución elegida
     (64x64, 128x128 o 256x256 px) y las guarda en disco para inspección/documentación.
     Limpia cualquier preprocesamiento anterior para no acumular archivos de otros datasets.
     """
+    if dir_salida is not None:
+        ruta_base = dir_salida
     limpiar_imagenes_preprocesadas(ruta_base)
     if not ruta_dataset or not os.path.exists(ruta_dataset):
         return None

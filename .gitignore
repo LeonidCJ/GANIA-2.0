@@ -3,10 +3,12 @@ venv/
 env/
 .venv/
 
-# Cache de Python
+# Cache de Python y PyInstaller
 __pycache__/
 *.py[cod]
 *$py.class
+build/
+dist/
 
 # Resultados y datos generados
 datos/datasets/

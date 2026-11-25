@@ -1,4 +1,4 @@
-# Configuración centralizada del proyecto GANIA 2.0 (FastGAN & Aumento Multiclase por Porcentaje)
+# Configuración centralizada del proyecto GANIA (FastGAN & Aumento Multiclase por Porcentaje)
 
 CONFIG = {
     "FASTGAN": {

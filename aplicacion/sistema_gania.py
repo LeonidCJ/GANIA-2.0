@@ -76,6 +76,9 @@ class WorkerFastGAN(QThread):
 
             for epoca in range(self.max_epocas):
                 if self._abortar:
+                    if epoca >= 1:
+                        ruta_ck = self.modelo.guardar_checkpoint(epoca, clase_nombre=self.clase_seleccionada)
+                        self.senal_log.emit(f"[Worker FastGAN] Checkpoint guardado al detener en época {epoca}: {ruta_ck}")
                     self.senal_log.emit("[Worker FastGAN] Entrenamiento cancelado por el usuario.")
                     return
 
@@ -86,8 +89,12 @@ class WorkerFastGAN(QThread):
                     return self._abortar
 
                 loss_G, loss_D = self.modelo.entrenar_epoca(cargador, epoca, self.max_epocas, abort_callback=check_abort)
+                self.modelo.epoca_checkpoint = num_ep
 
                 if self._abortar:
+                    if epoca >= 1:
+                        ruta_ck = self.modelo.guardar_checkpoint(epoca, clase_nombre=self.clase_seleccionada)
+                        self.senal_log.emit(f"[Worker FastGAN] Checkpoint guardado al detener en época {epoca}: {ruta_ck}")
                     return
 
                 # Muestra visual: Rejilla 3x3 en entrenamiento
@@ -127,7 +134,7 @@ class WorkerFastGAN(QThread):
 
                 intervalo_ckpt = cfg.get("INTERVALO_CHECKPOINT", 10 if es_cpu else 5)
                 if num_ep % intervalo_ckpt == 0 or num_ep == self.max_epocas:
-                    self.modelo.guardar_checkpoint(num_ep)
+                    self.modelo.guardar_checkpoint(num_ep, clase_nombre=self.clase_seleccionada)
 
             self.entrenamiento_completado.emit(f"Entrenamiento FastGAN completado para clase '{self.clase_seleccionada or 'Base'}'.")
 

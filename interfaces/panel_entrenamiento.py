@@ -280,6 +280,8 @@ class PanelConfiguracionDataset(QGroupBox):
 class PanelControlFastGAN(QGroupBox):
     senal_iniciar_fastgan = pyqtSignal()
     senal_detener_fastgan = pyqtSignal()
+    senal_cargar_modelo = pyqtSignal(str)
+    senal_guardar_modelo = pyqtSignal()
 
     def __init__(self):
         super().__init__("2. Entrenamiento FastGAN por Clase (ICLR 2021)")
@@ -404,6 +406,17 @@ class PanelControlFastGAN(QGroupBox):
         btn_layout.addWidget(self.btn_detener, 1)
         layout.addLayout(btn_layout)
 
+        # 7. Guardar modelo entrenado (.pth) después de entrenar
+        self.btn_guardar_ckpt = QPushButton(" Guardar Modelo (.pth)")
+        self.btn_guardar_ckpt.setIcon(icono_blanco("fa5s.save"))
+        self.btn_guardar_ckpt.setFixedHeight(36)
+        self.btn_guardar_ckpt.setEnabled(False)
+        self.btn_guardar_ckpt.setToolTip(
+            "Exporta y guarda el modelo FastGAN entrenado como archivo .pth en la carpeta que elijas."
+        )
+        self.btn_guardar_ckpt.clicked.connect(lambda: self.senal_guardar_modelo.emit())
+        layout.addWidget(self.btn_guardar_ckpt)
+
         self._al_cambiar_dispositivo_o_resolucion()
 
     @staticmethod
@@ -500,6 +513,7 @@ class PanelControlFastGAN(QGroupBox):
 
 class PanelAumentoDataset(QGroupBox):
     senal_generar_aumento = pyqtSignal(int)
+    senal_cargar_modelo = pyqtSignal(str)
 
     def __init__(self):
         super().__init__("3. Generación Sintética y Dataset Ampliado")
@@ -516,6 +530,17 @@ class PanelAumentoDataset(QGroupBox):
         self.lbl_estado_modelo.establecer("fa5s.times-circle", "Modelo FastGAN: No entrenado",
                                           color="#EF4444", negrita=True, tam_fuente=12)
         layout.addWidget(self.lbl_estado_modelo)
+
+        # Botón para cargar un modelo entrenado previamente (.pth local o desde Google Colab)
+        self.btn_cargar_modelo = QPushButton(" Cargar Modelo (.pth)")
+        self.btn_cargar_modelo.setIcon(icono_blanco("fa5s.file-upload"))
+        self.btn_cargar_modelo.setFixedHeight(36)
+        self.btn_cargar_modelo.setToolTip(
+            "Carga un archivo .pth entrenado previamente en tu PC o descargado desde Google Colab "
+            "para generar imágenes sintéticas sin volver a entrenar."
+        )
+        self.btn_cargar_modelo.clicked.connect(self._seleccionar_archivo_modelo)
+        layout.addWidget(self.btn_cargar_modelo)
 
         # Clase activa seleccionada
         self.lbl_clase_activa = NotaIcono(compacta=True, tam_icono=12)
@@ -637,9 +662,23 @@ class PanelAumentoDataset(QGroupBox):
                                              color="#64748B", fondo="rgba(100, 116, 139, 0.12)")
         self._recalcular_sinteticas()
 
-    def set_estado_modelo_listo(self, listo=True):
+    def _seleccionar_archivo_modelo(self):
+        dir_inicial = "./datos/resultados/checkpoints_fastgan"
+        if not os.path.exists(dir_inicial):
+            dir_inicial = "."
+        ruta, _ = QFileDialog.getOpenFileName(
+            self,
+            "Seleccionar Modelo FastGAN Entrenado (.pth)",
+            dir_inicial,
+            "Modelos PyTorch FastGAN (*.pth *.pt);;Todos los archivos (*.*)"
+        )
+        if ruta:
+            self.senal_cargar_modelo.emit(ruta)
+
+    def set_estado_modelo_listo(self, listo=True, detalle_extra=None):
         if listo:
-            self.lbl_estado_modelo.establecer("fa5s.check-circle", "Modelo FastGAN: Entrenado y listo",
+            texto = detalle_extra if detalle_extra else "Modelo FastGAN: Entrenado y listo"
+            self.lbl_estado_modelo.establecer("fa5s.check-circle", texto,
                                               color="#10B981", negrita=True, tam_fuente=12)
             self.btn_generar_aumento.setEnabled(True)
         else:

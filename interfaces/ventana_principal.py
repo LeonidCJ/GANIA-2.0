@@ -3,7 +3,7 @@ from datetime import datetime
 import os
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
                              QStatusBar, QTextEdit, QMessageBox, QStackedWidget, QFrame,
-                             QLabel, QPushButton, QScrollArea, QGraphicsDropShadowEffect)
+                             QLabel, QPushButton, QScrollArea, QGraphicsDropShadowEffect, QFileDialog)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor
 import torch
@@ -225,7 +225,7 @@ class VentanaGAN(QMainWindow):
         layout_h = QHBoxLayout(self.header)
         layout_h.setContentsMargins(20, 0, 20, 0)
 
-        self.lbl_titulo_app = QLabel("GANIA 2.0")
+        self.lbl_titulo_app = QLabel("GANIA")
         self.lbl_titulo_app.setStyleSheet("font-size: 20px; font-weight: 800; color: #3B82F6;")
 
         self.lbl_pantalla_actual = QLabel("|  PIPELINE EXPERIMENTAL")
@@ -350,6 +350,7 @@ class VentanaGAN(QMainWindow):
         self.panel_control_fastgan = PanelControlFastGAN()
         self.panel_control_fastgan.senal_iniciar_fastgan.connect(self.iniciar_entrenamiento_fastgan)
         self.panel_control_fastgan.senal_detener_fastgan.connect(self.detener_fastgan)
+        self.panel_control_fastgan.senal_guardar_modelo.connect(self.guardar_modelo_fastgan_archivo)
 
         scroll_izq = QScrollArea()
         scroll_izq.setFixedWidth(400)
@@ -388,6 +389,7 @@ class VentanaGAN(QMainWindow):
 
         self.panel_control_aumento = PanelAumentoDataset()
         self.panel_control_aumento.senal_generar_aumento.connect(self.ejecutar_aumento_dataset)
+        self.panel_control_aumento.senal_cargar_modelo.connect(self.cargar_modelo_fastgan_archivo)
 
         scroll_aum = QScrollArea()
         scroll_aum.setFixedWidth(420)
@@ -611,8 +613,11 @@ class VentanaGAN(QMainWindow):
         self.escribir_log(msj)
         self._set_estado_controles_entrenamiento(False)
         self.panel_control_fastgan.finalizar_progreso_entrenamiento(exito=True)
+        self.panel_control_fastgan.btn_guardar_ckpt.setEnabled(True)
         self.panel_control_aumento.set_estado_modelo_listo(True)
         clase_sel = self.panel_dataset.obtener_clase_seleccionada()
+        ep_final = getattr(self.fastgan, "epoca_checkpoint", self.panel_control_fastgan.spin_epocas.value())
+        ruta_auto = f"./datos/resultados/checkpoints_fastgan/fastgan_epoca_{ep_final}.pth"
         if hasattr(self, "card_resumen_fid"):
             det = getattr(self, "_ultimo_resumen_metricas", "Pesos EMA guardados")
             self.card_resumen_fid.actualizar_datos(f"Listo ({clase_sel})", det)
@@ -622,13 +627,17 @@ class VentanaGAN(QMainWindow):
         msg.setWindowTitle("FastGAN Entrenada")
         msg.setText(
             f"FastGAN entrenada y guardada exitosamente para la clase '{clase_sel}'.\n\n"
-            f"El modelo está listo para generar imágenes sintéticas de alta fidelidad."
+            f"Checkpoint automático: {ruta_auto}\n"
+            f"También puedes exportarlo a otra carpeta con el botón 'Guardar (.pth)'."
         )
         btn_ir_aumento = msg.addButton("Ir a Aumento de Dataset", QMessageBox.AcceptRole)
+        btn_exportar = msg.addButton("Guardar .pth como...", QMessageBox.ActionRole)
         msg.addButton("Permanecer aquí", QMessageBox.RejectRole)
         msg.exec_()
 
-        if msg.clickedButton() == btn_ir_aumento:
+        if msg.clickedButton() == btn_exportar:
+            self.guardar_modelo_fastgan_archivo()
+        elif msg.clickedButton() == btn_ir_aumento:
             self.cambiar_pantalla(4, "Dataset Ampliado por Porcentaje")
 
     def detener_fastgan(self):
@@ -636,7 +645,136 @@ class VentanaGAN(QMainWindow):
             self.worker_fastgan.abortar()
             self._set_estado_controles_entrenamiento(False)
             self.panel_control_fastgan.finalizar_progreso_entrenamiento(exito=False, detenido=True)
+            if self.fastgan is not None and getattr(self.fastgan, "epoca_checkpoint", 0) >= 1:
+                ep_det = self.fastgan.epoca_checkpoint
+                res_det = self.fastgan.tamano_img
+                self.panel_control_fastgan.btn_guardar_ckpt.setEnabled(True)
+                self.panel_control_aumento.set_estado_modelo_listo(
+                    True, detalle_extra=f"Modelo listo ({res_det}x{res_det} px · Época {ep_det})"
+                )
             self.escribir_log("Entrenamiento de FastGAN detenido por el usuario.")
+
+    def guardar_modelo_fastgan_archivo(self):
+        if self.fastgan is None:
+            QMessageBox.warning(self, "Sin Modelo", "No hay ningún modelo FastGAN entrenado o cargado para guardar.")
+            return
+
+        clase_sel = self.panel_dataset.obtener_clase_seleccionada()
+        if not clase_sel or clase_sel == "Sin clases detectadas":
+            clase_sel = getattr(self.fastgan, "clase_checkpoint", None) or "clase"
+        clase_limpia = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in str(clase_sel))
+        ep = getattr(self.fastgan, "epoca_checkpoint", 0)
+        res = getattr(self.fastgan, "tamano_img", 64)
+
+        dir_defecto = "./datos/resultados/checkpoints_fastgan"
+        os.makedirs(dir_defecto, exist_ok=True)
+        nombre_sugerido = os.path.join(dir_defecto, f"fastgan_{clase_limpia}_{res}x{res}_epoca_{ep}.pth")
+
+        ruta_destino, _ = QFileDialog.getSaveFileName(
+            self,
+            "Guardar Modelo FastGAN Entrenado (.pth)",
+            nombre_sugerido,
+            "Modelo PyTorch FastGAN (*.pth);;Todos los archivos (*.*)"
+        )
+        if not ruta_destino:
+            return
+        if not ruta_destino.lower().endswith((".pth", ".pt")):
+            ruta_destino += ".pth"
+
+        try:
+            if not self.fastgan._ema_bn_calibrado:
+                self.fastgan._calibrar_bn_ema()
+            torch.save({
+                'epoca': ep,
+                'tamano_img': res,
+                'clase_nombre': clase_sel,
+                'pasos_totales': self.fastgan.pasos_totales,
+                'gen_state_dict': self.fastgan.generador.state_dict(),
+                'gen_ema_state_dict': self.fastgan.generador_ema.state_dict(),
+                'dis_state_dict': self.fastgan.discriminador.state_dict(),
+                'opt_gen_state_dict': self.fastgan.opt_gen.state_dict(),
+                'opt_dis_state_dict': self.fastgan.opt_dis.state_dict(),
+            }, ruta_destino)
+            self.escribir_log(f"Modelo FastGAN exportado manualmente en: {ruta_destino}")
+            QMessageBox.information(
+                self, "Modelo Guardado",
+                f"El archivo de pesos FastGAN se guardó exitosamente en:\n{ruta_destino}"
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Error al Guardar", f"No se pudo guardar el archivo .pth:\n{e}")
+
+    def cargar_modelo_fastgan_archivo(self, ruta_pth):
+        if not ruta_pth or not os.path.exists(ruta_pth):
+            QMessageBox.warning(self, "Archivo no encontrado", "El archivo de modelo seleccionado no existe.")
+            return
+
+        try:
+            import torchvision.utils as vutils
+            from utils.tensor_utils import tensor_to_numpy
+
+            dispositivo_actual = obtener_dispositivo(usar_gpu=self.panel_control_fastgan.usar_gpu())
+            self.fastgan = EntrenadorFastGAN(dispositivo=dispositivo_actual)
+            epoca = self.fastgan.cargar_checkpoint(ruta_pth)
+            res = self.fastgan.tamano_img
+            nombre_archivo = os.path.basename(ruta_pth)
+
+            # Sincronizar el selector de resolución con el modelo cargado
+            idx_res = self.panel_control_fastgan.combo_resolucion.findData(res)
+            if idx_res >= 0:
+                self.panel_control_fastgan.combo_resolucion.setCurrentIndex(idx_res)
+
+            # Generar vista previa 3x3 con el generador EMA filtrado
+            sample_tensors = self.fastgan.generar_filtrado(9, factor_candidatos=4, truncation_psi=0.65).cpu()
+            grid_tensor = vutils.make_grid(sample_tensors, nrow=3, normalize=True, value_range=(-1, 1), padding=2)
+            self.panel_vis_fastgan.mostrar_imagen(tensor_to_numpy(grid_tensor))
+
+            # Actualizar estados visuales en ambas pantallas y en el Dashboard
+            self.panel_control_fastgan.barra_progreso.setValue(100)
+            self.panel_control_fastgan.btn_guardar_ckpt.setEnabled(True)
+            self.panel_control_fastgan.lbl_fase_entrenamiento.establecer(
+                "fa5s.check-circle", f"Modelo cargado ({res}x{res} px · Época {epoca})",
+                color="#10B981", negrita=True
+            )
+            self.panel_control_aumento.set_estado_modelo_listo(
+                True, detalle_extra=f"Modelo listo ({res}x{res} px · Época {epoca})"
+            )
+
+            if hasattr(self, "card_resumen_fid"):
+                self.card_resumen_fid.actualizar_datos(
+                    f"Cargado (Época {epoca})",
+                    f"{res}x{res} px  |  {nombre_archivo}"
+                )
+
+            self.escribir_log(
+                f"Modelo FastGAN cargado exitosamente desde '{nombre_archivo}' ({res}x{res} px, Época {epoca})."
+            )
+            self.barra_estado.showMessage(f"Modelo cargado: {nombre_archivo} ({res}x{res} px, Época {epoca})")
+
+            if self.pantallas_stack.currentIndex() == 3:
+                msg = QMessageBox(self)
+                msg.setIcon(QMessageBox.Information)
+                msg.setWindowTitle("Modelo FastGAN Cargado")
+                msg.setText(
+                    f"El archivo '{nombre_archivo}' ({res}x{res} px, Época {epoca}) se cargó correctamente.\n\n"
+                    f"Ya puedes generar imágenes sintéticas sin necesidad de volver a entrenar."
+                )
+                btn_ir = msg.addButton("Ir a Aumento de Dataset", QMessageBox.AcceptRole)
+                msg.addButton("Permanecer aquí", QMessageBox.RejectRole)
+                msg.exec_()
+                if msg.clickedButton() == btn_ir:
+                    self.cambiar_pantalla(4, "Dataset Ampliado por Porcentaje")
+            else:
+                QMessageBox.information(
+                    self, "Modelo FastGAN Cargado",
+                    f"El archivo '{nombre_archivo}' ({res}x{res} px, Época {epoca}) se cargó correctamente.\n\n"
+                    f"Selecciona el dataset/clase original y haz clic en 'Generar Sintéticas'."
+                )
+        except Exception as e:
+            self.escribir_log(f"Error al cargar el modelo '{ruta_pth}': {e}")
+            QMessageBox.critical(
+                self, "Error al Cargar Modelo",
+                f"No se pudo cargar el archivo de pesos FastGAN:\n{e}"
+            )
 
     # =========================================================================
     # EJECUCIÓN 2: AUMENTO DE DATASET POR CLASE Y PORCENTAJE

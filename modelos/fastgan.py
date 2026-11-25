@@ -357,7 +357,8 @@ class EntrenadorFastGAN:
         self.opt_gen = torch.optim.Adam(self.generador.parameters(), lr=lr, betas=(0.5, 0.999))
         self.opt_dis = torch.optim.Adam(self.discriminador.parameters(), lr=lr, betas=(0.5, 0.999))
 
-        self.ruido_fijo = torch.randn(64, dim_latente, 1, 1, device=dispositivo).clamp(-2.0, 2.0) * 0.90
+        self.ruido_fijo = torch.randn(64, dim_latente, 1, 1, device=dispositivo).clamp(-1.5, 1.5) * 0.65
+        self._ultimo_psi_calibrado = None
 
     @torch.no_grad()
     def _actualizar_ema(self):
@@ -367,27 +368,113 @@ class EntrenadorFastGAN:
         self._ema_bn_calibrado = False
 
     @torch.no_grad()
-    def _calibrar_bn_ema(self, truncation_psi=0.90):
+    def _calibrar_bn_ema(self, truncation_psi=0.65):
         self.generador_ema.train()
-        for _ in range(10):
+        for _ in range(12):
             z_cal = torch.randn(16, self.dim_latente, 1, 1, device=self.dispositivo)
             if truncation_psi is not None and truncation_psi < 1.0:
-                z_cal = z_cal.clamp(-2.0, 2.0) * truncation_psi
+                z_cal = z_cal.clamp(-1.5, 1.5) * truncation_psi
             self.generador_ema(z_cal)
         self.generador_ema.eval()
         self._ema_bn_calibrado = True
+        self._ultimo_psi_calibrado = truncation_psi
 
     @torch.no_grad()
-    def generar(self, z, truncation_psi=0.90):
-        if not self._ema_bn_calibrado:
+    def generar(self, z, truncation_psi=0.65):
+        if not self._ema_bn_calibrado or self._ultimo_psi_calibrado != truncation_psi:
             self._calibrar_bn_ema(truncation_psi=truncation_psi)
         self.generador_ema.eval()
         z_in = z.to(self.dispositivo)
         if truncation_psi is not None and truncation_psi < 1.0:
-            z_in = z_in.clamp(-2.0, 2.0) * truncation_psi
+            z_in = z_in.clamp(-1.5, 1.5) * truncation_psi
         return self.generador_ema(z_in)
 
-    def guardar_checkpoint(self, epoca, ruta_dir=None):
+    @torch.no_grad()
+    def generar_filtrado(self, cantidad, factor_candidatos=4, truncation_psi=0.65):
+        """
+        Genera `cantidad * factor_candidatos` muestras con truncamiento conservador y selecciona
+        el top 25% combinando:
+        1) Realismo bilateral del Discriminador (imagen normal y espejada horizontalmente),
+        2) Simetría anatómica semántica en el mapa de características f3 (8x8) del Discriminador,
+        3) Coherencia espacial 32x32 normalizada por varianza y filtro de contraste/brillo.
+        """
+        n_cand = max(24, int(cantidad * max(1, factor_candidatos)))
+        z_cand = torch.randn(n_cand, self.dim_latente, 1, 1, device=self.dispositivo)
+        imgs_cand = self.generar(z_cand, truncation_psi=truncation_psi)
+
+        if cantidad >= n_cand:
+            return imgs_cand[:cantidad]
+
+        try:
+            estado_prev = self.discriminador.training
+            momentos_prev = []
+            for m in self.discriminador.modules():
+                if isinstance(m, nn.BatchNorm2d):
+                    momentos_prev.append((m, m.momentum))
+                    m.momentum = 0.0
+
+            self.discriminador.train()
+            x_in = self.discriminador.down_pre(imgs_cand) if hasattr(self.discriminador, 'down_pre') else imgs_cand
+            f1 = self.discriminador.conv1(x_in)
+            f2 = self.discriminador.conv2(f1)
+            f3 = self.discriminador.conv3(f2)
+            f4 = self.discriminador.conv4(f3)
+            logits = self.discriminador.logits(f4).view(n_cand, -1).mean(1)
+            rec_img = self.discriminador.decoder(f3)
+            fuente = imgs_cand.clamp(-1.0, 1.0)
+            factor_pool = max(1, fuente.size(2) // 32)
+            img_patch = F.avg_pool2d(fuente, kernel_size=factor_pool, stride=factor_pool)
+
+            # Evaluar también la versión espejada para penalizar rostros torcidos de un lado
+            logits_flip = self.discriminador(torch.flip(imgs_cand, dims=[3]), rec=False)
+
+            for m, mom in momentos_prev:
+                m.momentum = mom
+            self.discriminador.train(estado_prev)
+
+            # 1. Realismo bilateral (debe verse realista tanto al derecho como en espejo)
+            logits_bi = torch.minimum(logits, logits_flip)
+            std_log = logits_bi.std().clamp(min=1e-5)
+            score_realismo = (logits_bi - logits_bi.mean()) / std_log
+
+            # 2. Simetría anatómica semántica en f3 (detecta ojos/orejas/hocico desalineados sin afectar pelaje bicolor)
+            energia_f3 = f3.norm(dim=1)  # (N, 8, 8)
+            centro_f3 = energia_f3[:, 1:7, 1:7]
+            espejo_f3 = torch.flip(energia_f3, dims=[2])[:, 1:7, 1:7]
+            asim_f3 = (centro_f3 - espejo_f3).abs().mean(dim=[1, 2]) / centro_f3.mean(dim=[1, 2]).clamp(min=1e-4)
+            std_asim = asim_f3.std().clamp(min=1e-5)
+            score_simetria = -((asim_f3 - asim_f3.mean()) / std_asim)
+
+            # 3. Coherencia espacial 32x32 normalizada por varianza
+            var_patch = img_patch.var(dim=[1, 2, 3]).clamp(min=0.03)
+            err_rec = ((rec_img - img_patch) ** 2).mean(dim=[1, 2, 3]) / var_patch
+            std_rec = err_rec.std().clamp(min=1e-5)
+            score_estructura = -((err_rec - err_rec.mean()) / std_rec)
+
+            # 4. Penalizar muestras deslavadas/grises (bajo contraste) o demasiado oscuras/quemadas
+            std_img = imgs_cand.std(dim=[1, 2, 3])
+            mean_img = imgs_cand.mean(dim=[1, 2, 3])
+            penalizacion_contraste = torch.where(std_img < 0.27, -6.0 * (0.27 - std_img) / 0.27, torch.zeros_like(std_img))
+            penalizacion_brillo = torch.where(
+                (mean_img < -0.36) | (mean_img > 0.40),
+                -4.0 * torch.ones_like(mean_img),
+                torch.zeros_like(mean_img)
+            )
+
+            puntaje_total = (
+                (0.45 * score_realismo)
+                + (0.35 * score_simetria)
+                + (0.20 * score_estructura)
+                + penalizacion_contraste
+                + penalizacion_brillo
+            )
+            mejores_idx = torch.topk(puntaje_total, k=cantidad, largest=True).indices
+            return imgs_cand[mejores_idx]
+        except Exception as exc:
+            logger.debug("Fallback sin filtrado de discriminador: %s", exc)
+            return imgs_cand[:cantidad]
+
+    def guardar_checkpoint(self, epoca, ruta_dir=None, clase_nombre=None):
         if ruta_dir is None:
             ruta_dir = _RUTAS.get("CHECKPOINTS_FASTGAN", "./datos/resultados/checkpoints_fastgan")
         if not self._ema_bn_calibrado:
@@ -397,6 +484,7 @@ class EntrenadorFastGAN:
         torch.save({
             'epoca': epoca,
             'tamano_img': self.tamano_img,
+            'clase_nombre': clase_nombre,
             'pasos_totales': self.pasos_totales,
             'gen_state_dict': self.generador.state_dict(),
             'gen_ema_state_dict': self.generador_ema.state_dict(),
@@ -420,22 +508,51 @@ class EntrenadorFastGAN:
 
     def cargar_checkpoint(self, ruta):
         checkpoint = torch.load(ruta, map_location=self.dispositivo, weights_only=False)
-        gen_sd = _adaptar_state_dict_generador(checkpoint['gen_state_dict'])
-        ema_sd = _adaptar_state_dict_generador(checkpoint.get('gen_ema_state_dict', checkpoint['gen_state_dict']))
+        raw_gen = checkpoint.get('gen_state_dict', checkpoint)
+        gen_sd = _adaptar_state_dict_generador(raw_gen)
+        ema_sd = _adaptar_state_dict_generador(checkpoint.get('gen_ema_state_dict', raw_gen))
+
+        # Detectar automáticamente la resolución del modelo guardado (64, 128 o 256 px)
+        tam_ckpt = checkpoint.get('tamano_img')
+        if tam_ckpt not in (64, 128, 256):
+            if any(k.startswith('feat_256.') for k in gen_sd.keys()):
+                tam_ckpt = 256
+            elif any(k.startswith('feat_128.') for k in gen_sd.keys()):
+                tam_ckpt = 128
+            else:
+                tam_ckpt = 64
+
+        if int(tam_ckpt) != self.tamano_img:
+            self.tamano_img = int(tam_ckpt)
+            self.generador = GeneradorFastGAN(self.dim_latente, 3, tamano_img=self.tamano_img).to(self.dispositivo)
+            self.discriminador = DiscriminadorFastGAN(3, tamano_img=self.tamano_img).to(self.dispositivo)
+            self.generador_ema = copy.deepcopy(self.generador).eval()
+            for p in self.generador_ema.parameters():
+                p.requires_grad_(False)
+            self.opt_gen = torch.optim.Adam(self.generador.parameters(), lr=0.0002, betas=(0.5, 0.999))
+            self.opt_dis = torch.optim.Adam(self.discriminador.parameters(), lr=0.0002, betas=(0.5, 0.999))
+
         try:
             self.generador.load_state_dict(gen_sd)
             self.generador_ema.load_state_dict(ema_sd)
-            self.discriminador.load_state_dict(checkpoint['dis_state_dict'])
-            self.opt_gen.load_state_dict(checkpoint['opt_gen_state_dict'])
-            self.opt_dis.load_state_dict(checkpoint['opt_dis_state_dict'])
+            if 'dis_state_dict' in checkpoint:
+                self.discriminador.load_state_dict(checkpoint['dis_state_dict'])
+            if 'opt_gen_state_dict' in checkpoint:
+                self.opt_gen.load_state_dict(checkpoint['opt_gen_state_dict'])
+            if 'opt_dis_state_dict' in checkpoint:
+                self.opt_dis.load_state_dict(checkpoint['opt_dis_state_dict'])
         except (RuntimeError, ValueError):
             self.generador.load_state_dict(gen_sd, strict=False)
             self.generador_ema.load_state_dict(ema_sd, strict=False)
-            self.discriminador.load_state_dict(checkpoint['dis_state_dict'], strict=False)
+            if 'dis_state_dict' in checkpoint:
+                self.discriminador.load_state_dict(checkpoint['dis_state_dict'], strict=False)
+
         self.pasos_totales = checkpoint.get('pasos_totales', 0)
+        self.clase_checkpoint = checkpoint.get('clase_nombre')
+        self.epoca_checkpoint = int(checkpoint.get('epoca', 0))
         self._calibrar_bn_ema()
-        logger.info("Checkpoint cargado desde: %s", ruta)
-        return checkpoint['epoca']
+        logger.info("Checkpoint cargado desde: %s (%dx%d px, época %d)", ruta, self.tamano_img, self.tamano_img, self.epoca_checkpoint)
+        return self.epoca_checkpoint
 
     def entrenar_epoca(self, cargador_datos, epoca_actual, total_epocas, abort_callback=None):
         self.generador.train()
@@ -505,8 +622,11 @@ class EntrenadorFastGAN:
         with torch.no_grad():
             while generadas < cantidad:
                 tamano_batch_actual = min(batch_size, cantidad - generadas)
-                z_ruido = torch.randn(tamano_batch_actual, self.dim_latente, 1, 1, device=self.dispositivo)
-                imgs_falsas = self.generar(z_ruido, truncation_psi=0.90)
+                imgs_falsas = self.generar_filtrado(
+                    tamano_batch_actual,
+                    factor_candidatos=4,
+                    truncation_psi=0.65
+                )
 
                 for idx in range(tamano_batch_actual):
                     img_tensor = imgs_falsas[idx]
